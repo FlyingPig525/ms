@@ -212,7 +212,7 @@ const GridSpace = union(enum) {
         }
     }
 
-    pub fn reveal(this: *GridSpace, info: TwoDimensionalList(GridSpace).AdjacentInformation, scene: *Board.Scene) TwoDimensionalList(GridSpace).BoundsError!void {
+    pub fn reveal(this: *GridSpace, info: Board.AdjacentInformation, scene: *Board.Scene) TwoDimensionalList(GridSpace).BoundsError!void {
         if (!this.hidden()) return;
 
         switch (this.*) {
@@ -379,25 +379,17 @@ const Board = struct {
         }
 
         if (rl.isKeyPressed(.space)) blk: {
-            const chunk_pos = this.cursor_pos.floorDivValue(chunk_size);
-            std.debug.print("chunk {d} {d}\n", .{ chunk_pos.x, chunk_pos.y });
-            const chunk = this.scene.getPtr(chunk_pos);
-            if (chunk == null) {
-                std.debug.print("null chunk\n", .{});
-                break :blk;
-            }
-            const rem = this.cursor_pos.sub(chunk_pos.multValue(chunk_size));
-            const ptr = chunk.?.getPtr(rem.x, rem.y) catch {
-                std.debug.print("null cell {d} {d}\n", .{ rem.x, rem.y });
+            const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
+                std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
                 break :blk;
             };
-            try ptr.reveal(.{ .x = rem.x, .y = rem.y, .list = chunk.? }, &this.scene);
+            try ptr.reveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this }, &this.scene);
         }
 
         this.camera.tick();
     }
 
-    pub fn setup(this: *@This(), io: std.Io) !void {
+    pub fn setup(this: *Board, io: std.Io) !void {
         var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Timestamp.now(io, .real).toMilliseconds()));
         const random = prng.random();
 
@@ -491,28 +483,112 @@ const Board = struct {
         }
     }
 
-    pub fn draw(this: @This()) void {
-        rl.beginMode2D(this.camera.camera);
-        defer rl.endMode2D();
+    pub fn draw(this: Board) !void {
+        {
+            rl.beginMode2D(this.camera.camera);
+            defer rl.endMode2D();
 
-        const camera_chunk = this.camera.target.divide(.{ .x = chunk_size * 20, .y = chunk_size * 20 });
-        const center_x: i32 = @intFromFloat(camera_chunk.x);
-        const center_y: i32 = @intFromFloat(camera_chunk.y);
-        var chunk_x = center_x - 2;
-        while (chunk_x < center_x + 2) : (chunk_x += 1) {
-            var chunk_y = center_y - 2;
-            while (chunk_y < center_y + 2) : (chunk_y += 1) {
-                const chunk_n = this.scene.get(.{ .x = chunk_x, .y = chunk_y });
-                if (chunk_n) |chunk| {
-                    for (0..chunk_size) |x| {
-                        for (0..chunk_size) |y| {
-                            const cell = chunk.get(@intCast(x), @intCast(y)) catch unreachable;
-                            const diffed_cursor = this.cursor_pos.sub(.{ .x = chunk_x * chunk_size, .y = chunk_y * chunk_size });
-                            cell.draw(.{ .x = @as(i32, @intCast(x)) + (chunk_x * chunk_size), .y = @as(i32, @intCast(y)) + (chunk_y * chunk_size), .width = 20, .height = 20, .hovering = diffed_cursor.lEql(@intCast(x), @intCast(y)) });
+            const camera_chunk = this.camera.target.divide(.{ .x = chunk_size * 20, .y = chunk_size * 20 });
+            const center_x: i32 = @intFromFloat(camera_chunk.x);
+            const center_y: i32 = @intFromFloat(camera_chunk.y);
+            var chunk_x = center_x - 2;
+            while (chunk_x < center_x + 2) : (chunk_x += 1) {
+                var chunk_y = center_y - 2;
+                while (chunk_y < center_y + 2) : (chunk_y += 1) {
+                    const chunk_n = this.scene.get(.{ .x = chunk_x, .y = chunk_y });
+                    if (chunk_n) |chunk| {
+                        for (0..chunk_size) |x| {
+                            for (0..chunk_size) |y| {
+                                const cell = chunk.get(@intCast(x), @intCast(y)) catch unreachable;
+                                const diffed_cursor = this.cursor_pos.sub(.{ .x = chunk_x * chunk_size, .y = chunk_y * chunk_size });
+                                cell.draw(.{ .x = @as(i32, @intCast(x)) + (chunk_x * chunk_size), .y = @as(i32, @intCast(y)) + (chunk_y * chunk_size), .width = 20, .height = 20, .hovering = diffed_cursor.lEql(@intCast(x), @intCast(y)) });
+                            }
                         }
                     }
                 }
             }
+        }
+        var buf: [20]u8 = undefined;
+        const txt = try std.fmt.bufPrintZ(&buf, "Cursor: {d} {d}", .{ this.cursor_pos.x, this.cursor_pos.y });
+        rl.drawText(txt, 0, 30, 24, .white);
+        const chunk_pos = this.cursor_pos.floorDivValue(chunk_size);
+        const chunk_text = try std.fmt.bufPrintZ(&buf, "Chunk: {d} {d}", .{ chunk_pos.x, chunk_pos.y });
+        rl.drawText(chunk_text, 0, 50, 24, .white);
+    }
+
+    pub fn get(this: Board, x: i32, y: i32) ?GridSpace {
+        const chunk_pos: IVec2 = .{ .x = @divFloor(x, chunk_size), .y = @divFloor(y, chunk_size) };
+        const chunk = this.scene.get(chunk_pos) orelse return null;
+        const relative_pos = (IVec2{ .x = x, .y = y }).sub(chunk_pos.multValue(chunk_size));
+        return chunk.get(relative_pos.x, relative_pos.y) catch |err| blk: {
+            std.log.err("Error encountered in Board.get: {any}", .{err});
+            break :blk null;
+        };
+    }
+    pub fn getPtr(this: Board, x: i32, y: i32) ?*GridSpace {
+        const chunk_pos: IVec2 = .{ .x = @divFloor(x, chunk_size), .y = @divFloor(y, chunk_size) };
+        const chunk = this.scene.get(chunk_pos) orelse return null;
+        const relative_pos = (IVec2{ .x = x, .y = y }).sub(chunk_pos.multValue(chunk_size));
+        return chunk.getPtr(relative_pos.x, relative_pos.y) catch |err| blk: {
+            std.log.err("Error encountered in Board.get: {any}", .{err});
+            break :blk null;
+        };
+    }
+    const AdjacentInformation = struct { list: *Board, x: i32, y: i32 };
+    /// Calls `func` for each adjacent cell, passing information about said adjacent cell to the function.
+    ///
+    /// This stupid method requires a very specific function layout.
+    /// The signature of `func` must be `fn(T, AdjacentInformation, ...)`. All arguments after `AdjacentInformation` can be anything
+    ///
+    /// To call this method, set the first two values of `args` to undefined.
+    /// Example: `list.repeatAdjacent(5, 3, worker, .{ undefined, undefined, 32, false })`
+    pub fn repeatAdjacent(this: *@This(), cell_x: i32, cell_y: i32, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
+        comptime var getFn: *const fn (@This(), i32, i32) ?@TypeOf(args[0]) = undefined;
+        comptime if (@typeInfo(@TypeOf(args[0])) == .pointer) {
+            getFn = getPtr;
+        } else {
+            getFn = get;
+        };
+        var a: @TypeOf(args) = args;
+        blk: {
+            a[0] = getFn(this.*, cell_x - 1, cell_y - 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x - 1, .y = cell_y - 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x, cell_y - 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x, .y = cell_y - 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x + 1, cell_y - 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x + 1, .y = cell_y - 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x + 1, cell_y) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x + 1, .y = cell_y };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x + 1, cell_y + 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x + 1, .y = cell_y + 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x, cell_y + 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x, .y = cell_y + 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x - 1, cell_y + 1) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x - 1, .y = cell_y + 1 };
+            try @call(.auto, func, a);
+        }
+        blk: {
+            a[0] = getFn(this.*, cell_x - 1, cell_y) orelse break :blk;
+            a[1] = AdjacentInformation{ .list = this, .x = cell_x - 1, .y = cell_y };
+            try @call(.auto, func, a);
         }
     }
 };
@@ -541,7 +617,7 @@ pub fn main(init: std.process.Init) !void {
         defer rl.endDrawing();
 
         rl.clearBackground(.black);
+        try board.draw();
         rl.drawFPS(0, 0);
-        board.draw();
     }
 }
