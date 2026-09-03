@@ -75,3 +75,25 @@ pub fn minNum(comptime T: type) T {
         }
     }
 }
+
+pub fn OperableNumber(comptime T: type) type {
+    return struct {
+        value: T,
+
+        pub fn add(this: *@This(), value: T) void {
+            this.value += value;
+        }
+        pub fn sub(this: *@This(), value: T) void {
+            this.value -= value;
+        }
+        pub fn mult(this: *@This(), value: T) void {
+            this.value *= value;
+        }
+        pub fn div(this: *@This(), value: T) void {
+            this.value = @divExact(this.value, value);
+        }
+        pub fn divFloor(this: *@This(), value: T) void {
+            this.value = @divFloor(this.value, value);
+        }
+    };
+}
