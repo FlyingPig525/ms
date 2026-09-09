@@ -1,70 +1,6 @@
 const std = @import("std");
 const rl = @import("raylib");
 
-pub const Menu = struct {
-    cursor: usize = 0,
-    items: []const MenuItem,
-    exit: bool = false,
-
-    pub const MenuItem = struct {
-        pub const SelectAction = *const fn (*Menu) void;
-        label: [:0]const u8,
-        action: SelectAction,
-
-        pub fn init(gpa: std.mem.Allocator, label: []const u8, action: SelectAction) !MenuItem {
-            const l = try gpa.dupeZ(u8, label);
-            return .{
-                .label = l,
-                .action = action,
-            };
-        }
-        pub fn deinit(this: MenuItem, gpa: std.mem.Allocator) void {
-            gpa.free(this.label);
-        }
-
-        pub fn draw(this: MenuItem, selected: bool, x: i32, y: i32) void {
-            rl.drawText(this.label, x, y, 32, if (selected) .light_gray else .white);
-        }
-
-        pub fn select(this: MenuItem, menu: *Menu) void {
-            this.action(menu);
-        }
-    };
-
-    pub fn init(items: []const MenuItem) Menu {
-        return .{
-            .items = items,
-        };
-    }
-
-    pub fn deinit(this: Menu, gpa: std.mem.Allocator) void {
-        for (this.items) |item| {
-            item.deinit(gpa);
-        }
-    }
-
-    pub fn tick(this: *Menu) void {
-        if (rl.isKeyPressed(.j)) {
-            this.cursor = std.math.clamp(this.cursor + 1, 0, this.items.len - 1);
-        }
-        if (rl.isKeyPressed(.k)) blk: {
-            if (this.cursor == 0) break :blk;
-            this.cursor = std.math.clamp(this.cursor - 1, 0, this.items.len - 1);
-        }
-        if (rl.isKeyPressed(.space)) {
-            this.items[this.cursor].select(this);
-        }
-    }
-
-    pub fn draw(this: Menu) void {
-        for (this.items, 0..) |item, _i| {
-            const i: i32 = @intCast(_i);
-            const selected = _i == this.cursor;
-            item.draw(selected, if (selected) 15 else 5, 5 + (37 * i));
-        }
-    }
-};
-
 pub const Node = struct {
     self: *anyopaque,
     vtable: *const VTable,
@@ -97,6 +33,8 @@ pub const Node = struct {
     pub fn addChild(this: *Node, child: *Node) !void {
         try this.children.append(this.gpa, child);
         child.parent = this;
+        if (child.vtable.parented) |i| try i(child.self, child, this);
+        if (this.vtable.add_child) |i| try i(this.self, this, child);
     }
 
     pub fn removeChild(this: *Node, i: usize) void {
@@ -122,6 +60,7 @@ pub const Node = struct {
         line: *const fn (node: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void,
         circle: *const fn (node: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void,
         text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void,
+        measure_text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2,
 
         pub const default: DrawTools = .{
             .rect = bubbleRect,
@@ -129,7 +68,12 @@ pub const Node = struct {
             .line = bubbleLine,
             .circle = bubbleCircle,
             .text = bubbleText,
+            .measure_text = bubbleMeasureText,
         };
+
+        fn bubbleMeasureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
+            return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
+        }
 
         fn bubbleText(this: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
             const true_pos = pos.add(this.space.offset);
@@ -204,8 +148,8 @@ pub const Node = struct {
     /// Values, except thickness, should be expressed as a fraction of that value of this node. For example, to draw
     /// to the center of this node, set the x and y to 0.5
     pub fn drawLine(this: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
-        const true_start = start.multiply(this.space.offset);
-        const true_end = end.multiply(this.space.offset);
+        const true_start = start.multiply(this.space.size).add(this.space.offset);
+        const true_end = end.multiply(this.space.size).add(this.space.offset);
         this.parent.tools.line(this.parent, true_start, true_end, thickness, color);
     }
 
@@ -214,14 +158,19 @@ pub const Node = struct {
     /// Values, except for radius, should be expressed as a fraction of that value of this node. For example, to draw
     /// to the center of this node, set the x and y to 0.5
     pub fn drawCircle(this: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void {
-        const true_center = center.multiply(this.space.offset);
+        const true_center = center.multiply(this.space.size).add(this.space.offset);
         this.parent.tools.circle(this.parent, true_center, radius, color);
     }
 
     pub fn drawText(this: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
-        const true_pos = pos.multiply(this.space.offset);
+        const true_pos = pos.multiply(this.space.size).add(this.space.offset);
         this.parent.tools.text(this.parent, font, text, true_pos, font_size, spacing, tint);
     }
+
+    fn measureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
+        return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
+    }
+
 
     // i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
     // i guess a u1 is basically the same, though.
@@ -233,8 +182,10 @@ pub const Node = struct {
     pub const VTable = struct {
         on_click: ?(*const fn (this: *anyopaque, node: *Node, button: rl.MouseButton, relative_pos: rl.Vector2) anyerror!Propagation) = null,
         on_input: ?(*const fn (this: *anyopaque, node: *Node, key: rl.KeyboardKey) anyerror!Propagation) = null,
+        add_child: ?(*const fn (this: *anyopaque, node: *Node, child: *Node) anyerror!void) = null,
         draw: ?(*const fn (this: *anyopaque, node: *Node) anyerror!void) = null,
         tick: ?(*const fn (this: *anyopaque, node: *Node, dt: f32) anyerror!void) = null,
+        parented: ?(*const fn (this: *anyopaque, node: *Node, parent: *Node) anyerror!void) = null,
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
 
         pub const nop: VTable = .{};
@@ -290,6 +241,7 @@ pub const RootNode = struct {
         .line = drawLine,
         .circle = drawCircle,
         .text = drawText,
+        .measure_text = measureText,
     };
 
     pub fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -345,6 +297,12 @@ pub const RootNode = struct {
         rl.drawTextEx(font, text, true_pos, font_size, spacing, tint);
     }
 
+    pub fn measureText(node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
+        const this: *RootNode = @ptrCast(@alignCast(node.self));
+        const vec = rl.measureTextEx(font, text, font_size, spacing);
+        return vec.divide(this.true_size).multiply(this.screen_size);
+    }
+
     pub fn toNode(this: *RootNode, gpa: std.mem.Allocator) !*Node {
         const node = try Node.init(gpa, this, .initSize(this.screen_size.x, this.screen_size.y), &.nop);
         node.tools = &tools;
@@ -382,16 +340,20 @@ pub const TextNode = struct {
     pub const vtable: Node.VTable = .{
         .draw = draw,
         .deinit = opaqueDeinit,
-        .on_input = null,
-        .on_click = null,
+        .parented = parented,
     };
     pub fn toNode(this: *TextNode) !*Node {
-        return try .init(this.gpa, this, .initSize(0, 0), &vtable);
+        return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
     }
 
     fn draw(ptr: *anyopaque, node: *Node) !void {
         const this: *TextNode = @ptrCast(@alignCast(ptr));
         node.drawText(this.font, this.text, .init(0, 0), this.font_size, @floatFromInt(this.font.glyphPadding), this.tint);
+    }
+
+    fn parented(ptr: *anyopaque, node: *Node, _: *Node) !void {
+        const this: *TextNode = @ptrCast(@alignCast(ptr));
+        node.space.size = node.measureText(this.font, this.text, this.font_size, @floatFromInt(this.font.glyphPadding));
     }
 };
 
@@ -400,5 +362,125 @@ pub const EmptyNode = struct {
 
     pub fn toNode(this: *EmptyNode, gpa: std.mem.Allocator) !*Node {
         return try Node.init(gpa, this, this.space, &.nop);
+    }
+};
+
+pub const LayoutNode = struct {
+    gap: f32,
+    direction: Direction,
+    flow: Flow,
+    gpa: std.mem.Allocator,
+
+    const vtable: Node.VTable = .{
+        .add_child = addChild,
+        .deinit = opaqueDeinit,
+    };
+
+    pub fn init(gpa: std.mem.Allocator, gap: f32, direction: Direction, flow: Flow) !*LayoutNode {
+        const node = try gpa.create(LayoutNode);
+        node.gap = gap;
+        node.direction = direction;
+        node.flow = flow;
+        node.gpa = gpa;
+        return node;
+    }
+
+    pub fn deinit(this: *LayoutNode) void {
+        this.gpa.destroy(this);
+    }
+
+    fn opaqueDeinit(ptr: *anyopaque) void {
+        deinit(@ptrCast(@alignCast(ptr)));
+    }
+
+    pub fn toNode(this: *LayoutNode) !*Node {
+        return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
+    }
+
+    pub const Direction = enum {
+        horizontal,
+        vertical,
+    };
+
+    pub const Flow = enum {
+        /// Requires one loop through node children
+        start,
+        /// Requires two loops through node children
+        end,
+    };
+
+    fn addChild(ptr: *anyopaque, node: *Node, _: *Node) !void {
+        const this: *LayoutNode = @ptrCast(@alignCast(ptr));
+        this.relayout(node);
+    }
+
+    fn relayout(this: *LayoutNode, node: *Node) void {
+        switch (this.direction) {
+            .horizontal => this.horizLayout(node),
+            .vertical => this.vertLayout(node),
+        }
+    }
+
+    fn horizLayout(this: *LayoutNode, node: *Node) void {
+        switch (this.flow) {
+            .start => {
+                var off: f32 = 0;
+                var height: f32 = 0;
+                for (node.children.items) |child| {
+                    child.space.offset.x = off;
+                    off += child.space.size.x + this.gap;
+                    if (child.space.size.y > height) height = child.space.size.y;
+                }
+                if (off != 0) off -= this.gap;
+                node.space.size = .{ .x = off, .y = height };
+            },
+            .end => {
+                var width: f32 = 0;
+                for (node.children.items) |child| {
+                    width += child.space.size.x + this.gap;
+                }
+                if (width != 0) width -= this.gap;
+                var off: f32 = width;
+                var height: f32 = 0;
+                for (node.children.items) |child| {
+                    child.space.offset.x = off;
+                    off -= child.space.size.x + this.gap;
+                    if (child.space.size.y > height) height = child.space.size.y;
+                }
+                node.space.size = .{ .x = width, .y = height };
+            },
+        }
+    }
+
+    fn vertLayout(this: *LayoutNode, node: *Node) void {
+        switch (this.flow) {
+            .start => {
+                var off: f32 = 0;
+                var height: f32 = 0;
+                for (node.children.items) |child| {
+                    child.space.offset.y = off;
+                    off += child.space.size.y + this.gap;
+                    if (child.space.size.x > height) height = child.space.size.x;
+                }
+                if (off != 0) off -= this.gap;
+                node.space.size = .{ .x = height, .y = off};
+            },
+            .end => {
+                var width: f32 = 0;
+                for (node.children.items) |child| {
+                    width += child.space.size.y + this.gap;
+                }
+                if (width != 0) width -= this.gap;
+                var off: f32 = width;
+                var height: f32 = 0;
+                for (node.children.items) |child| {
+                    child.space.offset.y = off;
+                    off -= child.space.size.y + this.gap;
+                    if (child.space.size.x > height) height = child.space.size.x;
+                }
+                node.space.size = .{ .y = width, .x = height };
+            },
+        }
+
     }
 };

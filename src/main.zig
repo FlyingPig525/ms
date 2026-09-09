@@ -2,7 +2,7 @@ const std = @import("std");
 const rl = @import("raylib");
 const math = @import("math.zig");
 const meta = @import("meta.zig");
-const menu = @import("menu.zig");
+const ui = @import("ui.zig");
 const TwoDimensionalList = @import("two_dimensional_list.zig").TwoDimensionalList;
 const IVec2 = math.IVec2;
 
@@ -453,6 +453,37 @@ const Board = struct {
     }
 };
 
+const SquareNode = struct {
+    gpa: std.mem.Allocator,
+
+    const vtable: ui.Node.VTable = .{
+        .draw = draw,
+        .deinit = opaqueDeinit,
+    };
+
+    pub fn init(gpa: std.mem.Allocator) !*SquareNode {
+        const node = try gpa.create(SquareNode);
+        node.gpa = gpa;
+        return node;
+    }
+
+    pub fn deinit(this: *SquareNode) void {
+        this.gpa.destroy(this);
+    }
+
+    fn opaqueDeinit(ptr: *anyopaque) void {
+        deinit(@ptrCast(@alignCast(ptr)));
+    }
+
+    pub fn toNode(this: *SquareNode) !*ui.Node {
+        return try ui.Node.init(this.gpa, this, .initSize(0, 0), &vtable);
+    }
+
+    fn draw(_: *anyopaque, node: *ui.Node) !void {
+        node.drawRect(.{ .x = 0, .y = 0, .width = 1, .height = 1 }, .white);
+    }
+};
+
 const FunnySquareNode = struct {
     gpa: std.mem.Allocator,
     width: f32,
@@ -470,44 +501,38 @@ const FunnySquareNode = struct {
         return node;
     }
 
-    pub const vtable: menu.Node.VTable = .{
+    pub const vtable: ui.Node.VTable = .{
         .on_input = onInput,
         .deinit = opaqueDeinit,
         .draw = draw,
     };
 
-    const colors = [_]rl.Color{
-        .green,
-        .red,
-        .blue,
-    };
+    const colors = [_]rl.Color{ .green, .red, .blue, .purple, .gray, .yellow, .magenta };
 
     pub fn deinit(this: *FunnySquareNode) void {
         this.gpa.destroy(this);
     }
 
     fn opaqueDeinit(ptr: *anyopaque) void {
-        deinit(@alignCast(@ptrCast(ptr)));
+        deinit(@ptrCast(@alignCast(ptr)));
     }
 
-    fn onInput(ptr: *anyopaque, _: *menu.Node, key: rl.KeyboardKey) !menu.Node.Propagation {
+    fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
         const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
         switch (key) {
             .space => {
                 this.index += 1;
                 if (this.index >= colors.len) this.index = 0;
-                std.log.debug("{d}", .{ this.index });
                 return .dont_propagate;
             },
             else => return .propagate,
         }
     }
 
-    fn draw(ptr: *anyopaque, node: *menu.Node) !void {
+    fn draw(ptr: *anyopaque, node: *ui.Node) !void {
         const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
         this.pos += 0.01 * this.factor;
         if (this.pos >= 1 or this.pos <= 0) this.factor *= -1;
-        std.log.debug("{d}", .{ this.index });
         node.drawRect(.{
             .width = 1,
             .height = 1,
@@ -516,8 +541,8 @@ const FunnySquareNode = struct {
         }, colors[this.index]);
     }
 
-    pub fn toNode(this: *FunnySquareNode) !*menu.Node {
-        return try menu.Node.init(this.gpa, this, .initSize(this.width, this.width), &vtable);
+    pub fn toNode(this: *FunnySquareNode) !*ui.Node {
+        return try ui.Node.init(this.gpa, this, .initSize(this.width, this.width), &vtable);
     }
 };
 
@@ -544,88 +569,66 @@ pub fn main(init: std.process.Init) !void {
     });
     rl.setExitKey(.null);
 
-    var root = menu.RootNode{
-        .screen_size = .init(1024, 720),
-        .true_size = .init(1024, 720),
-    };
-    const root_node = try root.toNode(init.gpa);
-    defer root_node.deinit();
-
-    const text = try menu.TextNode.initDefault(init.gpa, "hello world", 12, .white);
-    const text_node = try text.toNode();
-    text_node.space.offset = .init(64, 32);
-    try root_node.addChild(text_node);
-
-    const square = try FunnySquareNode.init(init.gpa, 50);
-    const square_node = try square.toNode();
-    square_node.space.offset = .init(50, 30);
-    try root_node.addChild(square_node);
-
-    while (!(should_exit or rl.windowShouldClose())) {
-        const dt = rl.getFrameTime();
-        try root_node.tick(dt);
-        while (iterateKeysPressed()) |key| {
-            std.log.debug("{any}", .{ key });
-            try root_node.onInput(key);
-        }
-        rl.beginDrawing();
-        rl.clearBackground(.black);
-        try root_node.draw();
-        rl.endDrawing();
-    }
     camera.move(10, 10);
     var board = try Board.init(init.gpa, 50, &camera);
     defer board.deinit();
     try board.setup(init.io);
 
-    var menu_data = menu.Menu.init(&.{
-        try .init(init.gpa, "Resume", resumeFromMenu),
-        try .init(init.gpa, "Exit", exitFromMenu),
-    });
-    defer menu_data.deinit(init.gpa);
-    menu_data.exit = true;
+    var root = ui.RootNode{
+        .screen_size = .init(1024, 720),
+        .true_size = .init(1024, 720),
+    };
+    const root_node = try root.toNode(init.gpa);
+    defer root_node.deinit();
+    const layout = try ui.LayoutNode.init(init.gpa, 5, .vertical, .start);
+    const layout_node = try layout.toNode();
+    layout_node.space.offset.y = 30;
+    try root_node.addChild(layout_node);
+
+    const resume_text = try ui.TextNode.initDefault(init.gpa, "Resume", 24, .white);
+    const resume_node = try resume_text.toNode();
+    const exit = try ui.TextNode.initDefault(init.gpa, "Exit", 24, .white);
+    const exit_node = try exit.toNode();
+    try layout_node.addChild(resume_node);
+    try layout_node.addChild(exit_node);
+    //    var menu_data = ui.Menu.init(&.{
+    //        try .init(init.gpa, "Resume", resumeFromMenu),
+    //        try .init(init.gpa, "Exit", exitFromMenu),
+    //    });
+    //    defer menu_data.deinit(init.gpa);
+    var in_game = true;
     while (!(should_exit or board.end_thyself or rl.windowShouldClose())) {
         if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
             should_exit = true;
             break;
         }
         if (rl.isKeyPressed(.escape)) {
-            menu_data.cursor = 0;
-            menu_data.exit = !menu_data.exit;
+            //            menu_data.cursor = 0;
+            in_game = !in_game;
         }
-        if (menu_data.exit) {
+        if (in_game) {
             try board.tick();
-        } else {
-            menu_data.tick();
         }
         rl.beginDrawing();
         defer rl.endDrawing();
 
         rl.clearBackground(.black);
-        if (menu_data.exit) {
+        if (in_game) {
             try board.draw();
         } else {
-            menu_data.draw();
+            try root_node.draw();
         }
         rl.drawFPS(0, 0);
     }
-    //        var cont = false;
-    //        while (!(cont or rl.windowShouldClose())) {
-    //            if (rl.isKeyPressed(.enter)) {
-    //                cont = true;
-    //           }
-    //            rl.beginDrawing();
-    //            defer rl.endDrawing();
-    //            rl.clearBackground(.black);
+    var cont = false;
+    while (!(cont or rl.windowShouldClose())) {
+        if (rl.isKeyPressed(.enter)) {
+            cont = true;
+        }
+        rl.beginDrawing();
+        defer rl.endDrawing();
+        rl.clearBackground(.black);
 
-    //            rl.drawText("you suck", 0, 0, 50, .white);
-    //        }
-}
-
-pub fn resumeFromMenu(menu_data: *menu.Menu) void {
-    menu_data.exit = true;
-}
-
-pub fn exitFromMenu(_: *menu.Menu) void {
-    should_exit = true;
+        rl.drawText("you suck", 0, 0, 50, .white);
+    }
 }
