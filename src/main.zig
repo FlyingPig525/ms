@@ -2,6 +2,7 @@ const std = @import("std");
 const rl = @import("raylib");
 const math = @import("math.zig");
 const meta = @import("meta.zig");
+const menu = @import("menu.zig");
 const TwoDimensionalList = @import("two_dimensional_list.zig").TwoDimensionalList;
 const IVec2 = math.IVec2;
 
@@ -126,6 +127,14 @@ const Camera = struct {
         this.animateMove(this.target.x + x, this.target.y + y, duration);
     }
 
+    pub fn move(this: *Camera, x: f32, y: f32) void {
+        this.last_pos = this.camera.target;
+        this.target = .{ .x = x, .y = y };
+        this.duration = null;
+        this.start_time = null;
+        this.camera.target = this.target;
+    }
+
     pub fn animateMove(this: *Camera, x: f32, y: f32, duration: f64) void {
         this.last_pos = this.camera.target;
         this.target = .{ .x = x, .y = y };
@@ -203,18 +212,18 @@ const Board = struct {
             this.cursor_pos.y += 1;
             this.camera.animateShift(0, 20, 0.2);
         }
-//        if (rl.isKeyDown(.e)) {
-//            this.camera.camera.zoom *= 1.1;
-//        }
-//        if (rl.isKeyDown(.q)) {
-//            this.camera.camera.zoom *= 0.9;
-//        }
+        if (rl.isKeyDown(.e)) {
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom * 1.1, 1.8719, 100);
+        }
+        if (rl.isKeyDown(.q)) {
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom * 0.9, 1.8719, 100);
+        }
         if (rl.isKeyPressed(.r)) {
             this.camera.camera.zoom = 1.8719;
         }
 
         if (rl.isKeyPressed(.t)) {
-            std.log.debug("{d}", .{ this.camera.camera.zoom });
+            std.log.debug("{d}", .{this.camera.camera.zoom});
         }
 
         if (rl.isKeyPressed(.space)) blk: {
@@ -343,13 +352,7 @@ const Board = struct {
     ///
     /// To call this method, set the first two values of `args` to undefined.
     /// Example: `list.repeatAdjacent(5, 3, worker, .{ undefined, undefined, 32, false })`
-    pub fn repeatAdjacent(
-        this: *@This(),
-        cell_x: i32,
-        cell_y: i32,
-        comptime func: anytype,
-        args: std.meta.ArgsTuple(@TypeOf(func))
-    ) meta.FnErrorUnionCompound(@TypeOf(func), void) {
+    pub fn repeatAdjacent(this: *@This(), cell_x: i32, cell_y: i32, comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) meta.FnErrorUnionCompound(@TypeOf(func), void) {
         comptime var getFn: *const fn (@This(), i32, i32) ?@TypeOf(args[0]) = undefined;
         comptime if (@typeInfo(@TypeOf(args[0])) == .pointer) {
             getFn = getPtr;
@@ -450,12 +453,88 @@ const Board = struct {
     }
 };
 
+const FunnySquareNode = struct {
+    gpa: std.mem.Allocator,
+    width: f32,
+    pos: f32,
+    factor: f32,
+    index: usize,
+
+    pub fn init(gpa: std.mem.Allocator, width: f32) !*FunnySquareNode {
+        const node = try gpa.create(FunnySquareNode);
+        node.gpa = gpa;
+        node.width = width;
+        node.pos = 0;
+        node.factor = 1;
+        node.index = 0;
+        return node;
+    }
+
+    pub const vtable: menu.Node.VTable = .{
+        .on_input = onInput,
+        .deinit = opaqueDeinit,
+        .draw = draw,
+    };
+
+    const colors = [_]rl.Color{
+        .green,
+        .red,
+        .blue,
+    };
+
+    pub fn deinit(this: *FunnySquareNode) void {
+        this.gpa.destroy(this);
+    }
+
+    fn opaqueDeinit(ptr: *anyopaque) void {
+        deinit(@alignCast(@ptrCast(ptr)));
+    }
+
+    fn onInput(ptr: *anyopaque, _: *menu.Node, key: rl.KeyboardKey) !menu.Node.Propagation {
+        const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
+        switch (key) {
+            .space => {
+                this.index += 1;
+                if (this.index >= colors.len) this.index = 0;
+                std.log.debug("{d}", .{ this.index });
+                return .dont_propagate;
+            },
+            else => return .propagate,
+        }
+    }
+
+    fn draw(ptr: *anyopaque, node: *menu.Node) !void {
+        const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
+        this.pos += 0.01 * this.factor;
+        if (this.pos >= 1 or this.pos <= 0) this.factor *= -1;
+        std.log.debug("{d}", .{ this.index });
+        node.drawRect(.{
+            .width = 1,
+            .height = 1,
+            .x = this.pos,
+            .y = 0,
+        }, colors[this.index]);
+    }
+
+    pub fn toNode(this: *FunnySquareNode) !*menu.Node {
+        return try menu.Node.init(this.gpa, this, .initSize(this.width, this.width), &vtable);
+    }
+};
+
+fn iterateKeysPressed() ?rl.KeyboardKey {
+    const key = rl.getKeyPressed();
+    if (key == .null) return null;
+    return key;
+}
+
+var should_exit = false;
 pub fn main(init: std.process.Init) !void {
     const screenWidth = 1080;
     const screenHeight = 720;
 
     rl.initWindow(screenWidth, screenHeight, "Minesweeeeeper");
     defer rl.closeWindow();
+    rl.setTargetFPS(60);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
@@ -463,25 +542,90 @@ pub fn main(init: std.process.Init) !void {
         .rotation = 0,
         .zoom = 1.8729,
     });
+    rl.setExitKey(.null);
+
+    var root = menu.RootNode{
+        .screen_size = .init(1024, 720),
+        .true_size = .init(1024, 720),
+    };
+    const root_node = try root.toNode(init.gpa);
+    defer root_node.deinit();
+
+    const text = try menu.TextNode.initDefault(init.gpa, "hello world", 12, .white);
+    const text_node = try text.toNode();
+    text_node.space.offset = .init(64, 32);
+    try root_node.addChild(text_node);
+
+    const square = try FunnySquareNode.init(init.gpa, 50);
+    const square_node = try square.toNode();
+    square_node.space.offset = .init(50, 30);
+    try root_node.addChild(square_node);
+
+    while (!(should_exit or rl.windowShouldClose())) {
+        const dt = rl.getFrameTime();
+        try root_node.tick(dt);
+        while (iterateKeysPressed()) |key| {
+            std.log.debug("{any}", .{ key });
+            try root_node.onInput(key);
+        }
+        rl.beginDrawing();
+        rl.clearBackground(.black);
+        try root_node.draw();
+        rl.endDrawing();
+    }
+    camera.move(10, 10);
     var board = try Board.init(init.gpa, 50, &camera);
     defer board.deinit();
     try board.setup(init.io);
 
-    rl.setTargetFPS(60);
-    while (!(rl.windowShouldClose() or board.end_thyself)) {
-        try board.tick();
+    var menu_data = menu.Menu.init(&.{
+        try .init(init.gpa, "Resume", resumeFromMenu),
+        try .init(init.gpa, "Exit", exitFromMenu),
+    });
+    defer menu_data.deinit(init.gpa);
+    menu_data.exit = true;
+    while (!(should_exit or board.end_thyself or rl.windowShouldClose())) {
+        if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
+            should_exit = true;
+            break;
+        }
+        if (rl.isKeyPressed(.escape)) {
+            menu_data.cursor = 0;
+            menu_data.exit = !menu_data.exit;
+        }
+        if (menu_data.exit) {
+            try board.tick();
+        } else {
+            menu_data.tick();
+        }
         rl.beginDrawing();
         defer rl.endDrawing();
 
         rl.clearBackground(.black);
-        try board.draw();
+        if (menu_data.exit) {
+            try board.draw();
+        } else {
+            menu_data.draw();
+        }
         rl.drawFPS(0, 0);
     }
-    while (!rl.windowShouldClose()) {
-        rl.beginDrawing();
-        defer rl.endDrawing();
-        rl.clearBackground(.black);
+    //        var cont = false;
+    //        while (!(cont or rl.windowShouldClose())) {
+    //            if (rl.isKeyPressed(.enter)) {
+    //                cont = true;
+    //           }
+    //            rl.beginDrawing();
+    //            defer rl.endDrawing();
+    //            rl.clearBackground(.black);
 
-        rl.drawText("you suck", 0, 0, 50, .white);
-    }
+    //            rl.drawText("you suck", 0, 0, 50, .white);
+    //        }
+}
+
+pub fn resumeFromMenu(menu_data: *menu.Menu) void {
+    menu_data.exit = true;
+}
+
+pub fn exitFromMenu(_: *menu.Menu) void {
+    should_exit = true;
 }
