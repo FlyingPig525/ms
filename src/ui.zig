@@ -46,6 +46,7 @@ pub const Node = struct {
         offset: rl.Vector2,
         size: rl.Vector2,
 
+        pub const zero: Space = .{ .offset = .{ .x = 0, .y = 0 }, .size = .{ .x = 0, .y = 0 } };
         pub fn initSize(width: f32, height: f32) Space {
             return .{
                 .offset = .init(0, 0),
@@ -171,12 +172,28 @@ pub const Node = struct {
         return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
     }
 
+    /// Loops through each child, calling `calculateSize`, adding the result to this node's calculated size.
+    ///
+    /// If this node's `vtable` contains a `calculate_size` member, it calls that instead.
+    pub fn calculateSize(this: *Node) !void {
+        if (this.vtable.calculate_size) |i| {
+            this.space.size = try i(this.self, this);
+        } else {
+            var size: rl.Vector2 = .init(0, 0);
+            for (this.children.items) |child| {
+                try child.calculateSize();
+                size = size.add(child.space.size);
+            }
+            this.space.size = size;
+        }
+    }
+
 
     // i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
     // i guess a u1 is basically the same, though.
     //
     // i dont really know why i chose to make this an enum instead of just making the functions return a bool to indicate
-    // propagation, but oh well.
+    // propagation, but oh well..
     pub const Propagation = enum(u1) { propagate, dont_propagate };
 
     pub const VTable = struct {
@@ -186,6 +203,8 @@ pub const Node = struct {
         draw: ?(*const fn (this: *anyopaque, node: *Node) anyerror!void) = null,
         tick: ?(*const fn (this: *anyopaque, node: *Node, dt: f32) anyerror!void) = null,
         parented: ?(*const fn (this: *anyopaque, node: *Node, parent: *Node) anyerror!void) = null,
+        /// If this member has a value, the function pointed to must call `calculateSize` on each of its children.
+        calculate_size: ?(*const fn (this: *anyopaque, node: *Node) anyerror!rl.Vector2) = null,
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
 
         pub const nop: VTable = .{};
@@ -242,6 +261,9 @@ pub const RootNode = struct {
         .circle = drawCircle,
         .text = drawText,
         .measure_text = measureText,
+    };
+    pub const vtable: Node.VTable = .{
+        .add_child = addChild,
     };
 
     pub fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -303,8 +325,12 @@ pub const RootNode = struct {
         return vec.divide(this.true_size).multiply(this.screen_size);
     }
 
+    fn addChild(_: *anyopaque, node: *Node, _: *Node) !void {
+        try node.calculateSize();
+    }
+
     pub fn toNode(this: *RootNode, gpa: std.mem.Allocator) !*Node {
-        const node = try Node.init(gpa, this, .initSize(this.screen_size.x, this.screen_size.y), &.nop);
+        const node = try Node.init(gpa, this, .initSize(this.screen_size.x, this.screen_size.y), &vtable);
         node.tools = &tools;
         return node;
     }
@@ -340,7 +366,7 @@ pub const TextNode = struct {
     pub const vtable: Node.VTable = .{
         .draw = draw,
         .deinit = opaqueDeinit,
-        .parented = parented,
+        .calculate_size = calculateSize,
     };
     pub fn toNode(this: *TextNode) !*Node {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
@@ -351,9 +377,9 @@ pub const TextNode = struct {
         node.drawText(this.font, this.text, .init(0, 0), this.font_size, @floatFromInt(this.font.glyphPadding), this.tint);
     }
 
-    fn parented(ptr: *anyopaque, node: *Node, _: *Node) !void {
+    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
         const this: *TextNode = @ptrCast(@alignCast(ptr));
-        node.space.size = node.measureText(this.font, this.text, this.font_size, @floatFromInt(this.font.glyphPadding));
+        return node.measureText(this.font, this.text, this.font_size, @floatFromInt(this.font.glyphPadding));
     }
 };
 
@@ -372,8 +398,8 @@ pub const LayoutNode = struct {
     gpa: std.mem.Allocator,
 
     const vtable: Node.VTable = .{
-        .add_child = addChild,
         .deinit = opaqueDeinit,
+        .calculate_size = calculateSize,
     };
 
     pub fn init(gpa: std.mem.Allocator, gap: f32, direction: Direction, flow: Flow) !*LayoutNode {
@@ -409,34 +435,32 @@ pub const LayoutNode = struct {
         end,
     };
 
-    fn addChild(ptr: *anyopaque, node: *Node, _: *Node) !void {
+    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
         const this: *LayoutNode = @ptrCast(@alignCast(ptr));
-        this.relayout(node);
+        return switch (this.direction) {
+            .horizontal => try this.horizLayout(node),
+            .vertical => try this.vertLayout(node),
+        };
     }
 
-    fn relayout(this: *LayoutNode, node: *Node) void {
-        switch (this.direction) {
-            .horizontal => this.horizLayout(node),
-            .vertical => this.vertLayout(node),
-        }
-    }
-
-    fn horizLayout(this: *LayoutNode, node: *Node) void {
+    fn horizLayout(this: *LayoutNode, node: *Node) !rl.Vector2 {
         switch (this.flow) {
             .start => {
                 var off: f32 = 0;
                 var height: f32 = 0;
                 for (node.children.items) |child| {
+                    try child.calculateSize();
                     child.space.offset.x = off;
                     off += child.space.size.x + this.gap;
                     if (child.space.size.y > height) height = child.space.size.y;
                 }
                 if (off != 0) off -= this.gap;
-                node.space.size = .{ .x = off, .y = height };
+                return .{ .x = off, .y = height };
             },
             .end => {
                 var width: f32 = 0;
                 for (node.children.items) |child| {
+                    try child.calculateSize();
                     width += child.space.size.x + this.gap;
                 }
                 if (width != 0) width -= this.gap;
@@ -447,27 +471,29 @@ pub const LayoutNode = struct {
                     off -= child.space.size.x + this.gap;
                     if (child.space.size.y > height) height = child.space.size.y;
                 }
-                node.space.size = .{ .x = width, .y = height };
+                return .{ .x = width, .y = height };
             },
         }
     }
 
-    fn vertLayout(this: *LayoutNode, node: *Node) void {
+    fn vertLayout(this: *LayoutNode, node: *Node) !rl.Vector2 {
         switch (this.flow) {
             .start => {
                 var off: f32 = 0;
                 var height: f32 = 0;
                 for (node.children.items) |child| {
+                    try child.calculateSize();
                     child.space.offset.y = off;
                     off += child.space.size.y + this.gap;
                     if (child.space.size.x > height) height = child.space.size.x;
                 }
                 if (off != 0) off -= this.gap;
-                node.space.size = .{ .x = height, .y = off};
+                return .{ .x = height, .y = off };
             },
             .end => {
                 var width: f32 = 0;
                 for (node.children.items) |child| {
+                    try child.calculateSize();
                     width += child.space.size.y + this.gap;
                 }
                 if (width != 0) width -= this.gap;
@@ -478,7 +504,7 @@ pub const LayoutNode = struct {
                     off -= child.space.size.y + this.gap;
                     if (child.space.size.x > height) height = child.space.size.x;
                 }
-                node.space.size = .{ .y = width, .x = height };
+                return .{ .y = width, .x = height };
             },
         }
 

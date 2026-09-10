@@ -453,96 +453,47 @@ const Board = struct {
     }
 };
 
-const SquareNode = struct {
+pub const MenuManager = struct {
+    cursor: usize,
     gpa: std.mem.Allocator,
+    layout: *ui.LayoutNode,
+    layout_node: *ui.Node,
+    res: *ui.TextNode,
+    res_node: *ui.Node,
+    exit: *ui.TextNode,
+    exit_node: *ui.Node,
+
+    pub fn init(gpa: std.mem.Allocator) !*MenuManager {
+        const node = try gpa.create(MenuManager);
+        node.cursor = 0;
+        node.gpa = gpa;
+        node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
+        node.layout_node = try node.layout.toNode();
+        node.res = try ui.TextNode.initDefault(gpa, "Resume", 24, .white);
+        node.res_node = try node.res.toNode();
+        try node.layout_node.addChild(node.res_node);
+        node.exit = try ui.TextNode.initDefault(gpa, "Exit", 24, .white);
+        node.exit_node = try node.exit.toNode();
+        try node.layout_node.addChild(node.exit_node);
+        return node;
+    }
+
+    pub fn deinit(this: *MenuManager) void {
+        this.gpa.destroy(this);
+    }
+
+    fn opaqueDeinit(ptr: *anyopaque) void {
+        deinit(@ptrCast(@alignCast(ptr)));
+    }
 
     const vtable: ui.Node.VTable = .{
-        .draw = draw,
         .deinit = opaqueDeinit,
     };
 
-    pub fn init(gpa: std.mem.Allocator) !*SquareNode {
-        const node = try gpa.create(SquareNode);
-        node.gpa = gpa;
+    pub fn toNode(this: *MenuManager) !*ui.Node {
+        const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
+        try node.addChild(this.layout_node);
         return node;
-    }
-
-    pub fn deinit(this: *SquareNode) void {
-        this.gpa.destroy(this);
-    }
-
-    fn opaqueDeinit(ptr: *anyopaque) void {
-        deinit(@ptrCast(@alignCast(ptr)));
-    }
-
-    pub fn toNode(this: *SquareNode) !*ui.Node {
-        return try ui.Node.init(this.gpa, this, .initSize(0, 0), &vtable);
-    }
-
-    fn draw(_: *anyopaque, node: *ui.Node) !void {
-        node.drawRect(.{ .x = 0, .y = 0, .width = 1, .height = 1 }, .white);
-    }
-};
-
-const FunnySquareNode = struct {
-    gpa: std.mem.Allocator,
-    width: f32,
-    pos: f32,
-    factor: f32,
-    index: usize,
-
-    pub fn init(gpa: std.mem.Allocator, width: f32) !*FunnySquareNode {
-        const node = try gpa.create(FunnySquareNode);
-        node.gpa = gpa;
-        node.width = width;
-        node.pos = 0;
-        node.factor = 1;
-        node.index = 0;
-        return node;
-    }
-
-    pub const vtable: ui.Node.VTable = .{
-        .on_input = onInput,
-        .deinit = opaqueDeinit,
-        .draw = draw,
-    };
-
-    const colors = [_]rl.Color{ .green, .red, .blue, .purple, .gray, .yellow, .magenta };
-
-    pub fn deinit(this: *FunnySquareNode) void {
-        this.gpa.destroy(this);
-    }
-
-    fn opaqueDeinit(ptr: *anyopaque) void {
-        deinit(@ptrCast(@alignCast(ptr)));
-    }
-
-    fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
-        const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
-        switch (key) {
-            .space => {
-                this.index += 1;
-                if (this.index >= colors.len) this.index = 0;
-                return .dont_propagate;
-            },
-            else => return .propagate,
-        }
-    }
-
-    fn draw(ptr: *anyopaque, node: *ui.Node) !void {
-        const this: *FunnySquareNode = @ptrCast(@alignCast(ptr));
-        this.pos += 0.01 * this.factor;
-        if (this.pos >= 1 or this.pos <= 0) this.factor *= -1;
-        node.drawRect(.{
-            .width = 1,
-            .height = 1,
-            .x = this.pos,
-            .y = 0,
-        }, colors[this.index]);
-    }
-
-    pub fn toNode(this: *FunnySquareNode) !*ui.Node {
-        return try ui.Node.init(this.gpa, this, .initSize(this.width, this.width), &vtable);
     }
 };
 
@@ -580,17 +531,11 @@ pub fn main(init: std.process.Init) !void {
     };
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
-    const layout = try ui.LayoutNode.init(init.gpa, 5, .vertical, .start);
-    const layout_node = try layout.toNode();
-    layout_node.space.offset.y = 30;
-    try root_node.addChild(layout_node);
+    const menu = try MenuManager.init(init.gpa);
+    const menu_node = try menu.toNode();
+    menu_node.space.offset.y = 30;
+    try root_node.addChild(menu_node);
 
-    const resume_text = try ui.TextNode.initDefault(init.gpa, "Resume", 24, .white);
-    const resume_node = try resume_text.toNode();
-    const exit = try ui.TextNode.initDefault(init.gpa, "Exit", 24, .white);
-    const exit_node = try exit.toNode();
-    try layout_node.addChild(resume_node);
-    try layout_node.addChild(exit_node);
     //    var menu_data = ui.Menu.init(&.{
     //        try .init(init.gpa, "Resume", resumeFromMenu),
     //        try .init(init.gpa, "Exit", exitFromMenu),
@@ -603,7 +548,6 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
         if (rl.isKeyPressed(.escape)) {
-            //            menu_data.cursor = 0;
             in_game = !in_game;
         }
         if (in_game) {
