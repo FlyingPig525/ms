@@ -454,27 +454,48 @@ const Board = struct {
 };
 
 pub const MenuManager = struct {
-    cursor: usize,
+    entry: Entry,
     gpa: std.mem.Allocator,
+    in_menu: bool,
+    quit_flag: *bool,
+    restart_flag: *bool,
     layout: *ui.LayoutNode,
     layout_node: *ui.Node,
     res: *ui.TextNode,
     res_node: *ui.Node,
+    restart: *ui.TextNode,
+    restart_node: *ui.Node,
     exit: *ui.TextNode,
     exit_node: *ui.Node,
 
-    pub fn init(gpa: std.mem.Allocator) !*MenuManager {
+    pub const Entry = enum(u8) {
+        res,
+        restart,
+        exit,
+    };
+
+    pub fn init(gpa: std.mem.Allocator, quit_ptr: *bool, restart_ptr: *bool) !*MenuManager {
         const node = try gpa.create(MenuManager);
-        node.cursor = 0;
+        node.entry = .res;
         node.gpa = gpa;
+        node.in_menu = false;
+        node.quit_flag = quit_ptr;
+        node.restart_flag = restart_ptr;
         node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
         node.layout_node = try node.layout.toNode();
         node.res = try ui.TextNode.initDefault(gpa, "Resume", 24, .white);
         node.res_node = try node.res.toNode();
+        node.res_node.space.offset.x = 12;
         try node.layout_node.addChild(node.res_node);
+        node.restart = try ui.TextNode.initDefault(gpa, "Restart", 24, .white);
+        node.restart_node = try node.restart.toNode();
+        node.restart_node.space.offset.x = 12;
+        try node.layout_node.addChild(node.restart_node);
         node.exit = try ui.TextNode.initDefault(gpa, "Exit", 24, .white);
         node.exit_node = try node.exit.toNode();
+        node.exit_node.space.offset.x = 12;
         try node.layout_node.addChild(node.exit_node);
+        node.updateNodes();
         return node;
     }
 
@@ -488,7 +509,61 @@ pub const MenuManager = struct {
 
     const vtable: ui.Node.VTable = .{
         .deinit = opaqueDeinit,
+        .on_input = onInput
     };
+
+    fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
+        const this: *MenuManager = @ptrCast(@alignCast(ptr));
+        switch (key) {
+            .j => this.entry = meta.nextEnumValueWrap(this.entry),
+            .k => this.entry = meta.prevEnumValueWrap(this.entry),
+            .space, .enter => {
+                switch (this.entry) {
+                    .res => {
+                        this.close();
+                    },
+                    .restart => {
+                        this.restart_flag.* = true;
+                        this.close();
+                    },
+                    .exit => {
+                        this.quit_flag.* = true;
+                    },
+                }
+            },
+            else => return .propagate,
+        }
+        this.updateNodes();
+        return .dont_propagate;
+    }
+
+    fn close(this: *MenuManager) void {
+        this.in_menu = false;
+        this.entry = @enumFromInt(0);
+    }
+
+    fn updateNodes(this: *MenuManager) void {
+        this.res.tint = .white;
+        this.res_node.space.offset.x = 12;
+        this.restart.tint = .white;
+        this.restart_node.space.offset.x = 12;
+        this.exit.tint = .white;
+        this.exit_node.space.offset.x = 12;
+        switch (this.entry) {
+            .res => {
+                this.res.tint = .light_gray;
+                this.res_node.space.offset.x += 12;
+            },
+            .restart => {
+                this.restart.tint = .light_gray;
+                this.restart_node.space.offset.x += 12;
+            },
+            .exit => {
+                this.exit.tint = .light_gray;
+                this.exit_node.space.offset.x += 12;
+            }
+        }
+    }
 
     pub fn toNode(this: *MenuManager) !*ui.Node {
         const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
@@ -503,14 +578,13 @@ fn iterateKeysPressed() ?rl.KeyboardKey {
     return key;
 }
 
-var should_exit = false;
 pub fn main(init: std.process.Init) !void {
     const screenWidth = 1080;
     const screenHeight = 720;
 
     rl.initWindow(screenWidth, screenHeight, "Minesweeeeeper");
     defer rl.closeWindow();
-    rl.setTargetFPS(60);
+    rl.setTargetFPS(61);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
@@ -519,11 +593,8 @@ pub fn main(init: std.process.Init) !void {
         .zoom = 1.8729,
     });
     rl.setExitKey(.null);
-
-    camera.move(10, 10);
-    var board = try Board.init(init.gpa, 50, &camera);
-    defer board.deinit();
-    try board.setup(init.io);
+    var should_exit = false;
+    var should_restart = false;
 
     var root = ui.RootNode{
         .screen_size = .init(1024, 720),
@@ -531,7 +602,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
-    const menu = try MenuManager.init(init.gpa);
+    const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart);
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
@@ -541,38 +612,49 @@ pub fn main(init: std.process.Init) !void {
     //        try .init(init.gpa, "Exit", exitFromMenu),
     //    });
     //    defer menu_data.deinit(init.gpa);
-    var in_game = true;
-    while (!(should_exit or board.end_thyself or rl.windowShouldClose())) {
-        if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
-            should_exit = true;
-            break;
-        }
-        if (rl.isKeyPressed(.escape)) {
-            in_game = !in_game;
-        }
-        if (in_game) {
-            try board.tick();
-        }
-        rl.beginDrawing();
-        defer rl.endDrawing();
+    while (!(should_exit or rl.windowShouldClose())) {
+        should_restart = false;
+        camera.move(10, 10);
+        var board = try Board.init(init.gpa, 50, &camera);
+        defer board.deinit();
+        try board.setup(init.io);
+        while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+            if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
+                should_exit = true;
+                break;
+            }
+            if (rl.isKeyPressed(.escape)) {
+                menu.in_menu = !menu.in_menu;
+            }
+            if (!menu.in_menu) {
+                try board.tick();
+            } else {
+                while (iterateKeysPressed()) |key| {
+                    try root_node.onInput(key);
+                }
+                try root_node.tick(rl.getFrameTime());
+            }
+            rl.beginDrawing();
+            defer rl.endDrawing();
 
-        rl.clearBackground(.black);
-        if (in_game) {
-            try board.draw();
-        } else {
-            try root_node.draw();
+            rl.clearBackground(.black);
+            if (!menu.in_menu) {
+                try board.draw();
+            } else {
+                try root_node.draw();
+            }
+            rl.drawFPS(0, 0);
         }
-        rl.drawFPS(0, 0);
-    }
-    var cont = false;
-    while (!(cont or rl.windowShouldClose())) {
-        if (rl.isKeyPressed(.enter)) {
-            cont = true;
-        }
-        rl.beginDrawing();
-        defer rl.endDrawing();
-        rl.clearBackground(.black);
+        var cont = false;
+        while (!(should_exit or cont or should_restart or rl.windowShouldClose())) {
+            if (rl.isKeyPressed(.enter) or rl.isKeyPressed(.space)) {
+                cont = true;
+            }
+            rl.beginDrawing();
+            defer rl.endDrawing();
+            rl.clearBackground(.black);
 
-        rl.drawText("you suck", 0, 0, 50, .white);
+            rl.drawText("you suck", 0, 0, 50, .white);
+        }
     }
 }

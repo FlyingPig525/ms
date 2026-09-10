@@ -3,6 +3,7 @@ const rl = @import("raylib");
 
 pub const Node = struct {
     self: *anyopaque,
+    frozen: bool,
     vtable: *const VTable,
     tools: *const DrawTools,
     space: Space,
@@ -13,6 +14,7 @@ pub const Node = struct {
     pub fn init(gpa: std.mem.Allocator, self: *anyopaque, space: Space, vtable: *const VTable) !*Node {
         var node = try gpa.create(Node);
         node.self = self;
+        node.frozen = false;
         node.vtable = vtable;
         node.tools = &.default;
         node.space = space;
@@ -180,11 +182,14 @@ pub const Node = struct {
             this.space.size = try i(this.self, this);
         } else {
             var size: rl.Vector2 = .init(0, 0);
+            var largest_offset: rl.Vector2 = .init(0, 0);
             for (this.children.items) |child| {
                 try child.calculateSize();
                 size = size.add(child.space.size);
+                if (child.space.offset.x > largest_offset.x) largest_offset.x = child.space.offset.x;
+                if (child.space.offset.y > largest_offset.y) largest_offset.y = child.space.offset.y;
             }
-            this.space.size = size;
+            this.space.size = size.add(largest_offset);
         }
     }
 
@@ -213,6 +218,7 @@ pub const Node = struct {
     };
 
     pub fn onClick(this: *Node, button: rl.MouseButton, relative_pos: rl.Vector2) !void {
+        if (this.frozen) return;
         if (this.vtable.on_click != null and try this.vtable.on_click.?(this.self, this, button, relative_pos) != .propagate) return;
         for (this.children.items) |child| {
             const child_rect = rl.Rectangle{
@@ -229,6 +235,7 @@ pub const Node = struct {
     }
 
     pub fn onInput(this: *Node, key: rl.KeyboardKey) !void {
+        if (this.frozen) return;
         if (this.vtable.on_input != null and try this.vtable.on_input.?(this.self, this, key) != .propagate) return;
         for (this.children.items) |child| {
             try child.onInput(key);
