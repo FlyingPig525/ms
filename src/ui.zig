@@ -89,6 +89,8 @@ pub const Node = struct {
         circle: *const fn (node: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void,
         text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void,
         measure_text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2,
+        texture: *const fn (node: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void,
+        scale_size: *const fn (node: *Node, size: rl.Vector2) rl.Vector2,
 
         pub const default: DrawTools = .{
             .rect = bubbleRect,
@@ -97,11 +99,22 @@ pub const Node = struct {
             .circle = bubbleCircle,
             .text = bubbleText,
             .measure_text = bubbleMeasureText,
+            .texture = bubbleTexture,
+            .scale_size = bubbleScaleSize,
         };
 
         // Bubble versions of the node draw functions draw to the absolute space of this node.
         //
         // For example, if the node has a size `.{ .x = 128, .y = 64 }`, the center would be `.{ .x = 64, .y = 32 }`.
+
+        fn bubbleScaleSize(this: *Node, size: rl.Vector2) rl.Vector2 {
+            return this.parent.tools.scale_size(this.parent, size);
+        }
+
+        fn bubbleTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+            const true_pos = pos.add(this.space.offset);
+            this.parent.tools.texture(this.parent, texture, true_pos, tint);
+        }
 
         fn bubbleMeasureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
             return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
@@ -200,11 +213,26 @@ pub const Node = struct {
         this.parent.tools.text(this.parent, font, text, true_pos, font_size, spacing, tint);
     }
 
+    /// Draws a texture in the space of this node
+    ///
+    /// `pos` values should be expressed as a fraction of that value of this node. For example, to draw
+    /// to the center of this node, set the x and y to 0.5
+    pub fn drawTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+        const true_pos = pos.multiply(this.space.size).add(this.space.offset);
+        this.parent.tools.texture(this.parent, texture, true_pos, tint);
+    }
+
     /// Measures the size of text. Bubbles up until it finds an implementation of `DrawTools.measure_text`, generally
     /// a `RootNode`, returning the size of the text in terms of the `RootNode`'s scale-space.
-    fn measureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
+    pub fn measureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
         return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
     }
+
+    /// Scales the provided size to that of the scale-space.
+    pub fn scaleSize(this: *Node, size: rl.Vector2) rl.Vector2 {
+        return this.parent.tools.scale_size(this.parent, size);
+    }
+
 
     /// Loops through each child, calling `calculateSize`, adding the result to this node's calculated size.
     ///
@@ -261,11 +289,19 @@ pub const Node = struct {
         /// Allows automatic cleanup of a custom node's resources.
         ///
         /// Any node that allocates memory or requires any other cleanup after use should provide a `deinit` function.
+        // i dont know why i didnt make this one nullable, but im too lazy to change it now
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
 
         pub const nop: VTable = .{};
 
         fn nopDeinit(_: *anyopaque) void {}
+        fn basicOpaqueDeinit(comptime T: type) *const fn (this: *anyopaque) void {
+            return struct {
+                pub fn opaqueDeinit(ptr: *anyopaque) void {
+                    T.deinit(@as(*T, @ptrCast(@alignCast(ptr))));
+                }
+            }.opaqueDeinit;
+        }
     };
 
     pub fn onClick(this: *Node, button: rl.MouseButton, relative_pos: rl.Vector2) !void {
@@ -323,6 +359,8 @@ pub const RootNode = struct {
         .circle = drawCircle,
         .text = drawText,
         .measure_text = measureText,
+        .scale_size = scaleSize,
+        .texture = drawTexture,
     };
     pub const vtable: Node.VTable = .{
         .add_child = addChild,
@@ -381,10 +419,21 @@ pub const RootNode = struct {
         rl.drawTextEx(font, text, true_pos, font_size, spacing, tint);
     }
 
+    pub fn drawTexture(node: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const true_pos = pos.divide(this.screen_size).multiply(this.true_size);
+        texture.drawV(true_pos, tint);
+    }
+
     pub fn measureText(node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
         const this: *RootNode = @ptrCast(@alignCast(node.manager));
         const vec = rl.measureTextEx(font, text, font_size, spacing);
         return vec.divide(this.true_size).multiply(this.screen_size);
+    }
+
+    pub fn scaleSize(node: *Node, size: rl.Vector2) rl.Vector2 {
+        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        return size.divide(this.true_size).multiply(this.screen_size);
     }
 
     fn addChild(_: *anyopaque, node: *Node, _: *Node) !void {
@@ -577,5 +626,79 @@ pub const LayoutNode = struct {
             },
         }
 
+    }
+};
+
+/// Draws a `Texture` to the screen. The `Texture` is owned by this node, and will be cleaned up when this node is
+/// deinitialized.
+/// **Children should not be added to this node, as they will not be accounted for in any calculations.**
+pub const TextureNode = struct {
+    gpa: std.mem.Allocator,
+    image: rl.Image,
+    texture: rl.Texture,
+    target_size: ?rl.Vector2,
+    loaded: bool,
+
+    pub fn init(gpa: std.mem.Allocator, file_name: [:0]const u8, size: ?rl.Vector2) !*TextureNode {
+        const node = try gpa.create(TextureNode);
+        node.gpa = gpa;
+        node.image = try .init(file_name);
+        node.target_size = size;
+        node.loaded = false;
+        return node;
+    }
+
+    pub fn initImage(gpa: std.mem.Allocator, image: rl.Image, size: ?rl.Vector2) !*TextureNode {
+        const node = try gpa.create(TextureNode);
+        node.gpa = gpa;
+        node.image = image;
+        node.target_size = size;
+        node.loaded = false;
+        return node;
+    }
+
+    pub fn deinit(this: *TextureNode) void {
+        if (this.loaded) {
+            this.texture.unload();
+        }
+        this.image.unload();
+        this.gpa.destroy(this);
+    }
+
+    pub fn resize(this: *TextureNode, size: rl.Vector2) !void {
+        this.target_size = size;
+        if (this.loaded) {
+            this.loaded = false;
+            this.texture.unload();
+        }
+        this.image.resize(@intFromFloat(size.x), @intFromFloat(size.y));
+        this.texture = try rl.Texture.fromImage(this.image);
+        this.loaded = true;
+    }
+
+    const vtable: Node.VTable = .{
+        .deinit = Node.VTable.basicOpaqueDeinit(TextureNode),
+        .draw = draw,
+        .calculate_size = calculateSize,
+    };
+    pub fn toNode(this: *TextureNode) !*Node {
+        return try Node.init(this.gpa, this, .zero, &vtable);
+    }
+
+    fn draw(ptr: *anyopaque, node: *Node) !void {
+        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        node.drawTexture(this.texture, .init(0, 0), .white);
+    }
+
+    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
+        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        if (!this.loaded) {
+            if (this.target_size) |size| {
+                this.image.resize(@intFromFloat(size.x), @intFromFloat(size.y));
+            }
+            this.texture = try .fromImage(this.image);
+            this.loaded = true;
+        }
+        return node.scaleSize(.init(@floatFromInt(this.texture.width), @floatFromInt(this.texture.height)));
     }
 };

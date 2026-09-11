@@ -507,10 +507,7 @@ pub const MenuManager = struct {
         deinit(@ptrCast(@alignCast(ptr)));
     }
 
-    const vtable: ui.Node.VTable = .{
-        .deinit = opaqueDeinit,
-        .on_input = onInput
-    };
+    const vtable: ui.Node.VTable = .{ .deinit = opaqueDeinit, .on_input = onInput };
 
     fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
         const this: *MenuManager = @ptrCast(@alignCast(ptr));
@@ -561,7 +558,7 @@ pub const MenuManager = struct {
             .exit => {
                 this.exit.tint = .light_gray;
                 this.exit_node.space.offset.x += 12;
-            }
+            },
         }
     }
 
@@ -584,7 +581,7 @@ pub fn main(init: std.process.Init) !void {
 
     rl.initWindow(screenWidth, screenHeight, "Minesweeeeeper");
     defer rl.closeWindow();
-    rl.setTargetFPS(61);
+    rl.setTargetFPS(60);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
@@ -606,6 +603,10 @@ pub fn main(init: std.process.Init) !void {
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
+    const texture = try ui.TextureNode.init(init.gpa, "texture.png", .init(300, 300));
+    const texture_node = try texture.toNode();
+    texture_node.space.offset.x = 300;
+    try root_node.addChild(texture_node);
 
     //    var menu_data = ui.Menu.init(&.{
     //        try .init(init.gpa, "Resume", resumeFromMenu),
@@ -630,6 +631,10 @@ pub fn main(init: std.process.Init) !void {
                 try board.tick();
             } else {
                 while (iterateKeysPressed()) |key| {
+                    if (key == .r) {
+                        try texture.resize(texture.target_size.?.addValue(25));
+                        continue;
+                    }
                     try root_node.onInput(key);
                 }
                 try root_node.tick(rl.getFrameTime());
