@@ -54,8 +54,8 @@ pub const Node = struct {
     pub fn addChild(this: *Node, child: *Node) !void {
         try this.children.append(this.gpa, child);
         child.parent = this;
-        if (child.vtable.parented) |i| try i(child.manager, child, this);
         if (this.vtable.add_child) |i| try i(this.manager, this, child);
+        if (child.vtable.parented) |i| try i(child.manager, child, this);
     }
 
     /// Removes and deinitializes the child at index `i` and moves all children of a higher index down to fill
@@ -233,7 +233,6 @@ pub const Node = struct {
         return this.parent.tools.scale_size(this.parent, size);
     }
 
-
     /// Loops through each child, calling `calculateSize`, adding the result to this node's calculated size.
     ///
     /// If this node's `vtable` contains a `calculate_size` member, it calls that instead.
@@ -253,7 +252,6 @@ pub const Node = struct {
         }
     }
 
-
     // i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
     // i guess a u1 is basically the same, though.
     //
@@ -271,14 +269,14 @@ pub const Node = struct {
         ///
         /// Returns whether to propagate this event to children.
         on_input: ?(*const fn (this: *anyopaque, node: *Node, key: rl.KeyboardKey) anyerror!Propagation) = null,
-        /// Fires whenever a child is added to this node.
+        /// Fires whenever a child is added to this node, before `parented` is fired on the child.
         add_child: ?(*const fn (this: *anyopaque, node: *Node, child: *Node) anyerror!void) = null,
         /// Fires every frame, allowing a node to draw to the screen using the draw functions available through
         /// `node`.
         draw: ?(*const fn (this: *anyopaque, node: *Node) anyerror!void) = null,
         /// Fires before every frame.
         tick: ?(*const fn (this: *anyopaque, node: *Node, dt: f32) anyerror!void) = null,
-        /// Fires when this node becomes a child of another node.
+        /// Fires when this node becomes a child of another node, after `add_child` is fired on the parent.
         parented: ?(*const fn (this: *anyopaque, node: *Node, parent: *Node) anyerror!void) = null,
         /// Returns the size of this node. This is automatically called recursively on the node graph when
         /// this node or a parent node is attached to a `RootNode`.
@@ -295,7 +293,7 @@ pub const Node = struct {
         pub const nop: VTable = .{};
 
         fn nopDeinit(_: *anyopaque) void {}
-        fn basicOpaqueDeinit(comptime T: type) *const fn (this: *anyopaque) void {
+        pub fn basicOpaqueDeinit(comptime T: type) *const fn (this: *anyopaque) void {
             return struct {
                 pub fn opaqueDeinit(ptr: *anyopaque) void {
                     T.deinit(@as(*T, @ptrCast(@alignCast(ptr))));
@@ -625,7 +623,6 @@ pub const LayoutNode = struct {
                 return .{ .y = width, .x = height };
             },
         }
-
     }
 };
 
@@ -700,5 +697,36 @@ pub const TextureNode = struct {
             this.loaded = true;
         }
         return node.scaleSize(.init(@floatFromInt(this.texture.width), @floatFromInt(this.texture.height)));
+    }
+};
+
+// Draw a rectangle the same size as the node.
+pub const RectNode = struct {
+    gpa: std.mem.Allocator,
+    color: rl.Color,
+
+    const vtable: Node.VTable = .{
+        .draw = draw,
+        .deinit = Node.VTable.basicOpaqueDeinit(RectNode),
+    };
+
+    pub fn init(gpa: std.mem.Allocator, color: rl.Color) !*RectNode {
+        const node = try gpa.create(RectNode);
+        node.gpa = gpa;
+        node.color = color;
+        return node;
+    }
+
+    pub fn deinit(this: *RectNode) void {
+        this.gpa.destroy(this);
+    }
+
+    pub fn toNode(this: *RectNode) !*Node {
+        return try Node.init(this.gpa, this, .zero, &vtable);
+    }
+
+    fn draw(ptr: *anyopaque, node: *Node) !void {
+        const this: *RectNode = @ptrCast(@alignCast(ptr));
+        node.drawRect(.init(0, 0, 1, 1), this.color);
     }
 };

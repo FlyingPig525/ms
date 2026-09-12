@@ -461,17 +461,76 @@ pub const MenuManager = struct {
     restart_flag: *bool,
     layout: *ui.LayoutNode,
     layout_node: *ui.Node,
-    res: *ui.TextNode,
+    res: *EntryNode,
     res_node: *ui.Node,
-    restart: *ui.TextNode,
+    restart: *EntryNode,
     restart_node: *ui.Node,
-    exit: *ui.TextNode,
+    exit: *EntryNode,
     exit_node: *ui.Node,
 
     pub const Entry = enum(u8) {
         res,
         restart,
         exit,
+    };
+
+    pub const EntryNode = struct {
+        gpa: std.mem.Allocator,
+        text: *ui.TextNode,
+        text_node: *ui.Node,
+        rect: *ui.RectNode,
+        rect_node: *ui.Node,
+        selected: bool,
+
+        const entry_vtable: ui.Node.VTable = .{
+            .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
+            .calculate_size = calculateSize,
+        };
+
+        pub fn init(gpa: std.mem.Allocator, text: [:0]const u8) !*EntryNode {
+            const node = try gpa.create(EntryNode);
+            node.gpa = gpa;
+            node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
+            node.text_node = try node.text.toNode();
+            node.rect = try ui.RectNode.init(gpa, .blank);
+            node.rect_node = try node.rect.toNode();
+            node.rect_node.space.size.x = 3;
+            node.selected = false;
+            return node;
+        }
+
+        pub fn deinit(this: *EntryNode) void {
+            this.gpa.destroy(this);
+        }
+
+        pub fn toNode(this: *EntryNode) !*ui.Node {
+            const node = try ui.Node.init(this.gpa, this, .zero, &entry_vtable);
+            try node.addChild(this.text_node);
+            try node.addChild(this.rect_node);
+            return node;
+        }
+
+        // this isnt how i would recommend doing this, but i cant think of a easier way right now
+        fn calculateSize(ptr: *anyopaque, _: *ui.Node) !rl.Vector2 {
+            const this: *EntryNode = @ptrCast(@alignCast(ptr));
+            try this.text_node.calculateSize();
+            this.rect_node.space.size.y = this.text_node.space.size.y;
+            return this.text_node.space.size.add(.init(12, 0));
+        }
+
+        pub fn deselect(this: *EntryNode) void {
+            this.selected = false;
+            this.text.tint = .white;
+            this.text_node.space.offset.x = 0;
+            this.rect.color = .blank;
+        }
+
+        pub fn select(this: *EntryNode) void {
+            this.selected = true;
+            this.text.tint = .light_gray;
+            this.text_node.space.offset.x = 12;
+            this.rect.color = .light_gray;
+        }
     };
 
     pub fn init(gpa: std.mem.Allocator, quit_ptr: *bool, restart_ptr: *bool) !*MenuManager {
@@ -483,18 +542,22 @@ pub const MenuManager = struct {
         node.restart_flag = restart_ptr;
         node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
         node.layout_node = try node.layout.toNode();
-        node.res = try ui.TextNode.initDefault(gpa, "Resume", 24, .white);
+        node.res = try EntryNode.init(gpa, "Resume");
+        node.res.select();
         node.res_node = try node.res.toNode();
         node.res_node.space.offset.x = 12;
         try node.layout_node.addChild(node.res_node);
-        node.restart = try ui.TextNode.initDefault(gpa, "Restart", 24, .white);
+
+        node.restart = try EntryNode.init(gpa, "Restart");
         node.restart_node = try node.restart.toNode();
         node.restart_node.space.offset.x = 12;
         try node.layout_node.addChild(node.restart_node);
-        node.exit = try ui.TextNode.initDefault(gpa, "Exit", 24, .white);
+
+        node.exit = try EntryNode.init(gpa, "Exit");
         node.exit_node = try node.exit.toNode();
         node.exit_node.space.offset.x = 12;
         try node.layout_node.addChild(node.exit_node);
+
         node.updateNodes();
         return node;
     }
@@ -540,25 +603,13 @@ pub const MenuManager = struct {
     }
 
     fn updateNodes(this: *MenuManager) void {
-        this.res.tint = .white;
-        this.res_node.space.offset.x = 12;
-        this.restart.tint = .white;
-        this.restart_node.space.offset.x = 12;
-        this.exit.tint = .white;
-        this.exit_node.space.offset.x = 12;
+        this.res.deselect();
+        this.restart.deselect();
+        this.exit.deselect();
         switch (this.entry) {
-            .res => {
-                this.res.tint = .light_gray;
-                this.res_node.space.offset.x += 12;
-            },
-            .restart => {
-                this.restart.tint = .light_gray;
-                this.restart_node.space.offset.x += 12;
-            },
-            .exit => {
-                this.exit.tint = .light_gray;
-                this.exit_node.space.offset.x += 12;
-            },
+            .res => this.res.select(),
+            .restart => this.restart.select(),
+            .exit => this.exit.select(),
         }
     }
 
@@ -576,16 +627,16 @@ fn iterateKeysPressed() ?rl.KeyboardKey {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const screenWidth = 1080;
-    const screenHeight = 720;
+    const screen_width = 1080;
+    const screen_height = 720;
 
-    rl.initWindow(screenWidth, screenHeight, "Minesweeeeeper");
+    rl.initWindow(screen_width, screen_height, "Minesweeeeeper");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
-        .offset = .{ .x = screenWidth / 2, .y = screenHeight / 2 },
+        .offset = .{ .x = screen_width / 2, .y = screen_height / 2 },
         .rotation = 0,
         .zoom = 1.8729,
     });
@@ -593,9 +644,10 @@ pub fn main(init: std.process.Init) !void {
     var should_exit = false;
     var should_restart = false;
 
+    // TODO: for some reason when these are different values, things dont scale correctly. i dont know why yet
     var root = ui.RootNode{
-        .screen_size = .init(1024, 720),
-        .true_size = .init(1024, 720),
+        .screen_size = .init(screen_width, screen_height),
+        .true_size = .init(screen_width, screen_height),
     };
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
@@ -603,10 +655,6 @@ pub fn main(init: std.process.Init) !void {
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
-    const texture = try ui.TextureNode.init(init.gpa, "texture.png", .init(300, 300));
-    const texture_node = try texture.toNode();
-    texture_node.space.offset.x = 300;
-    try root_node.addChild(texture_node);
 
     //    var menu_data = ui.Menu.init(&.{
     //        try .init(init.gpa, "Resume", resumeFromMenu),
@@ -631,10 +679,6 @@ pub fn main(init: std.process.Init) !void {
                 try board.tick();
             } else {
                 while (iterateKeysPressed()) |key| {
-                    if (key == .r) {
-                        try texture.resize(texture.target_size.?.addValue(25));
-                        continue;
-                    }
                     try root_node.onInput(key);
                 }
                 try root_node.tick(rl.getFrameTime());
