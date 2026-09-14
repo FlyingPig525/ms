@@ -89,7 +89,7 @@ pub const Node = struct {
         circle: *const fn (node: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void,
         text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void,
         measure_text: *const fn (node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2,
-        texture: *const fn (node: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void,
+        texture: *const fn (node: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void,
         scale_size: *const fn (node: *Node, size: rl.Vector2) rl.Vector2,
 
         pub const default: DrawTools = .{
@@ -111,9 +111,9 @@ pub const Node = struct {
             return this.parent.tools.scale_size(this.parent, size);
         }
 
-        fn bubbleTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+        fn bubbleTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
             const true_pos = pos.add(this.space.offset);
-            this.parent.tools.texture(this.parent, texture, true_pos, tint);
+            this.parent.tools.texture(this.parent, texture, true_pos, scale, tint);
         }
 
         fn bubbleMeasureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
@@ -217,9 +217,9 @@ pub const Node = struct {
     ///
     /// `pos` values should be expressed as a fraction of that value of this node. For example, to draw
     /// to the center of this node, set the x and y to 0.5
-    pub fn drawTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+    pub fn drawTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
-        this.parent.tools.texture(this.parent, texture, true_pos, tint);
+        this.parent.tools.texture(this.parent, texture, true_pos, scale, tint);
     }
 
     /// Measures the size of text. Bubbles up until it finds an implementation of `DrawTools.measure_text`, generally
@@ -289,10 +289,21 @@ pub const Node = struct {
         /// Any node that allocates memory or requires any other cleanup after use should provide a `deinit` function.
         // i dont know why i didnt make this one nullable, but im too lazy to change it now
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
+        /// Used for the inspector.
+        type_info: *const fn () NodeInfo,
 
         pub const nop: VTable = .{};
 
         fn nopDeinit(_: *anyopaque) void {}
+        pub fn basicTypeInfo(comptime T: type) *const fn () NodeInfo {
+            return struct {
+                pub fn typeInfo() NodeInfo {
+                    return .{
+                        .name = @typeName(T),
+                    };
+                }
+            }.typeInfo;
+        }
         pub fn basicOpaqueDeinit(comptime T: type) *const fn (this: *anyopaque) void {
             return struct {
                 pub fn opaqueDeinit(ptr: *anyopaque) void {
@@ -300,6 +311,10 @@ pub const Node = struct {
                 }
             }.opaqueDeinit;
         }
+    };
+
+    pub const NodeInfo = struct {
+        name: [:0]const u8,
     };
 
     pub fn onClick(this: *Node, button: rl.MouseButton, relative_pos: rl.Vector2) !void {
@@ -362,6 +377,7 @@ pub const RootNode = struct {
     };
     pub const vtable: Node.VTable = .{
         .add_child = addChild,
+        .type_info = Node.VTable.basicTypeInfo(RootNode),
     };
 
     pub fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -417,10 +433,10 @@ pub const RootNode = struct {
         rl.drawTextEx(font, text, true_pos, font_size, spacing, tint);
     }
 
-    pub fn drawTexture(node: *Node, texture: rl.Texture, pos: rl.Vector2, tint: rl.Color) void {
+    pub fn drawTexture(node: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
         const this: *RootNode = @ptrCast(@alignCast(node.manager));
         const true_pos = pos.divide(this.screen_size).multiply(this.true_size);
-        texture.drawV(true_pos, tint);
+        texture.drawEx(true_pos, 0, scale, tint);
     }
 
     pub fn measureText(node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
@@ -477,6 +493,7 @@ pub const TextNode = struct {
         .draw = draw,
         .deinit = opaqueDeinit,
         .calculate_size = calculateSize,
+        .type_info = Node.VTable.basicTypeInfo(TextNode),
     };
     pub fn toNode(this: *TextNode) !*Node {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
@@ -512,6 +529,7 @@ pub const LayoutNode = struct {
     const vtable: Node.VTable = .{
         .deinit = opaqueDeinit,
         .calculate_size = calculateSize,
+        .type_info = Node.VTable.basicTypeInfo(LayoutNode),
     };
 
     pub fn init(gpa: std.mem.Allocator, gap: f32, direction: Direction, flow: Flow) !*LayoutNode {
@@ -626,18 +644,18 @@ pub const LayoutNode = struct {
     }
 };
 
-/// Draws a `Texture` to the screen. The `Texture` is owned by this node, and will be cleaned up when this node is
+/// Draws an `Image` to the screen. The `Image` is owned by this node, and will be cleaned up when this node is
 /// deinitialized.
 /// **Children should not be added to this node, as they will not be accounted for in any calculations.**
-pub const TextureNode = struct {
+pub const ImageNode = struct {
     gpa: std.mem.Allocator,
     image: rl.Image,
     texture: rl.Texture,
     target_size: ?rl.Vector2,
     loaded: bool,
 
-    pub fn init(gpa: std.mem.Allocator, file_name: [:0]const u8, size: ?rl.Vector2) !*TextureNode {
-        const node = try gpa.create(TextureNode);
+    pub fn init(gpa: std.mem.Allocator, file_name: [:0]const u8, size: ?rl.Vector2) !*ImageNode {
+        const node = try gpa.create(ImageNode);
         node.gpa = gpa;
         node.image = try .init(file_name);
         node.target_size = size;
@@ -645,8 +663,8 @@ pub const TextureNode = struct {
         return node;
     }
 
-    pub fn initImage(gpa: std.mem.Allocator, image: rl.Image, size: ?rl.Vector2) !*TextureNode {
-        const node = try gpa.create(TextureNode);
+    pub fn initImage(gpa: std.mem.Allocator, image: rl.Image, size: ?rl.Vector2) !*ImageNode {
+        const node = try gpa.create(ImageNode);
         node.gpa = gpa;
         node.image = image;
         node.target_size = size;
@@ -654,7 +672,7 @@ pub const TextureNode = struct {
         return node;
     }
 
-    pub fn deinit(this: *TextureNode) void {
+    pub fn deinit(this: *ImageNode) void {
         if (this.loaded) {
             this.texture.unload();
         }
@@ -662,7 +680,7 @@ pub const TextureNode = struct {
         this.gpa.destroy(this);
     }
 
-    pub fn resize(this: *TextureNode, size: rl.Vector2) !void {
+    pub fn resize(this: *ImageNode, size: rl.Vector2) !void {
         this.target_size = size;
         if (this.loaded) {
             this.loaded = false;
@@ -674,21 +692,22 @@ pub const TextureNode = struct {
     }
 
     const vtable: Node.VTable = .{
-        .deinit = Node.VTable.basicOpaqueDeinit(TextureNode),
+        .deinit = Node.VTable.basicOpaqueDeinit(ImageNode),
         .draw = draw,
         .calculate_size = calculateSize,
+        .type_info = Node.VTable.basicTypeInfo(ImageNode),
     };
-    pub fn toNode(this: *TextureNode) !*Node {
+    pub fn toNode(this: *ImageNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
     fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        const this: *ImageNode = @ptrCast(@alignCast(ptr));
         node.drawTexture(this.texture, .init(0, 0), .white);
     }
 
     fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
-        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        const this: *ImageNode = @ptrCast(@alignCast(ptr));
         if (!this.loaded) {
             if (this.target_size) |size| {
                 this.image.resize(@intFromFloat(size.x), @intFromFloat(size.y));
@@ -708,6 +727,7 @@ pub const RectNode = struct {
     const vtable: Node.VTable = .{
         .draw = draw,
         .deinit = Node.VTable.basicOpaqueDeinit(RectNode),
+        .type_info = Node.VTable.basicTypeInfo(RectNode),
     };
 
     pub fn init(gpa: std.mem.Allocator, color: rl.Color) !*RectNode {
@@ -728,5 +748,47 @@ pub const RectNode = struct {
     fn draw(ptr: *anyopaque, node: *Node) !void {
         const this: *RectNode = @ptrCast(@alignCast(ptr));
         node.drawRect(.init(0, 0, 1, 1), this.color);
+    }
+};
+
+pub const TextureNode = struct {
+    gpa: std.mem.Allocator,
+    texture: rl.Texture,
+    scale: f32,
+    owns_texture: bool,
+
+    pub fn init(gpa: std.mem.Allocator, texture: rl.Texture, owns_texture: bool) !*TextureNode {
+        const node = try gpa.create(TextureNode);
+        node.gpa = gpa;
+        node.texture = texture;
+        node.scale = 1;
+        node.owns_texture = owns_texture;
+    }
+
+    pub fn deinit(this: *TextureNode) void {
+        if (this.owns_texture) {
+            this.texture.unload();
+        }
+        this.gpa.destroy(this);
+    }
+
+    const vtable: Node.VTable = .{
+        .deinit = Node.VTable.basicOpaqueDeinit(TextureNode),
+        .draw = draw,
+        .calculate_size = calculateSize,
+        .type_info = Node.VTable.basicTypeInfo(TextureNode),
+    };
+    pub fn toNode(this: *TextureNode) !*Node {
+        return try Node.init(this.gpa, this, .zero, &vtable);
+    }
+
+    fn draw(ptr: *anyopaque, node: *Node) !void {
+        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        node.drawTexture(this.texture, .zero(), this.scale, .white);
+    }
+
+    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
+        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+        return node.scaleSize(.init(@floatFromInt(this.texture.width), @floatFromInt(this.texture.height)));
     }
 };

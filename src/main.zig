@@ -3,6 +3,7 @@ const rl = @import("raylib");
 const math = @import("math.zig");
 const meta = @import("meta.zig");
 const ui = @import("ui.zig");
+const Inspector = @import("Inspector.zig");
 const TwoDimensionalList = @import("two_dimensional_list.zig").TwoDimensionalList;
 const IVec2 = math.IVec2;
 
@@ -10,15 +11,16 @@ const primary_color: i32 = 0x47bf98ff;
 const secondary_color: i32 = 0x214e45ff;
 const tertiary_color: i32 = 0x111d21ff;
 
-fn Hidden(comptime T: type) type {
+fn Cell(comptime T: type) type {
     if (T == void) {
         return struct {
-            hidden: bool,
-            pub const default: @This() = .{ .hidden = true };
+            hidden: bool = true,
+            flagged: bool = false,
         };
     }
     return struct {
-        hidden: bool,
+        hidden: bool = true,
+        flagged: bool = false,
         value: T,
     };
 }
@@ -29,9 +31,9 @@ fn defaultDrawTextEx(text: [:0]const u8, position: rl.Vector2, font_size: f32, t
 }
 
 const GridSpace = union(GridSpace.Type) {
-    number: Hidden(u8),
-    mine: Hidden(void),
-    empty_cell: Hidden(void),
+    number: Cell(u8),
+    mine: Cell(void),
+    empty_cell: Cell(void),
 
     const Type = enum {
         number,
@@ -45,8 +47,13 @@ const GridSpace = union(GridSpace.Type) {
             },
         }
     }
+    pub fn flagged(this: GridSpace) bool {
+        switch (this) {
+            inline else => |v| return v.flagged,
+        }
+    }
 
-    pub fn reveal(this: *GridSpace, info: Board.AdjacentInformation, scene: *Board.Scene) TwoDimensionalList(GridSpace).BoundsError!Type {
+    pub fn reveal(this: *GridSpace, info: Board.AdjacentInformation) TwoDimensionalList(GridSpace).BoundsError!Type {
         if (!this.hidden()) return std.meta.activeTag(this.*);
 
         switch (this.*) {
@@ -55,9 +62,49 @@ const GridSpace = union(GridSpace.Type) {
             },
         }
         if (this.* == .empty_cell) {
-            try info.list.repeatAdjacent(info.x, info.y, reveal, .{ undefined, undefined, scene });
+            try info.list.repeatAdjacent(info.x, info.y, reveal, .{ undefined, undefined });
         }
         return std.meta.activeTag(this.*);
+    }
+
+    pub fn fullFlagReveal(this: *GridSpace, info: Board.AdjacentInformation) !bool {
+        if (this.* == .number) {
+            const value = this.number.value;
+            var flagged_cells: u8 = 0;
+            {
+                comptime var x = -1;
+                inline while (x <= 1) : (x += 1) {
+                    comptime var y = -1;
+                    inline while (y <= 1) : (y += 1) {
+                        if (info.list.get(info.x + x, info.y + y)) |cell| {
+                            if (cell.flagged()) flagged_cells += 1;
+                        }
+                    }
+                }
+            }
+            if (flagged_cells >= value) {
+                comptime var x = -1;
+                inline while (x <= 1) : (x += 1) {
+                    comptime var y = -1;
+                    inline while (y <= 1) : (y += 1) {
+                        if (info.list.getPtr(info.x + x, info.y + y)) |cell| blk: {
+                            if (cell.flagged()) break :blk;
+                            const t = try cell.reveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list });
+                            if (t == .mine) return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn toggleFlag(this: *GridSpace) void {
+        switch (this.*) {
+            inline else => |*v| {
+                v.flagged = !v.flagged;
+            },
+        }
     }
 
     pub const DrawOptions = struct {
@@ -97,7 +144,11 @@ const GridSpace = union(GridSpace.Type) {
                 .empty_cell => {},
             }
         } else {
-            color = .fromInt(primary_color);
+            if (this.flagged()) {
+                color = .dark_gray;
+            } else {
+                color = .fromInt(primary_color);
+            }
             //            rl.drawRectangleRec(rect, .fromInt(primary_color));
         }
         rl.drawRectangleRec(rect, color);
@@ -231,10 +282,25 @@ const Board = struct {
                 std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
                 break :blk;
             };
-            const t = try ptr.reveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this }, &this.scene);
-            if (t == .mine) {
-                this.end_thyself = true;
+            if (ptr.flagged()) break :blk;
+            if (!ptr.hidden() and ptr.* == .number) {
+                if (try ptr.fullFlagReveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this })) {
+                    this.end_thyself = true;
+                }
+            } else {
+                const t = try ptr.reveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this });
+                if (t == .mine) {
+                    this.end_thyself = true;
+                }
             }
+        }
+
+        if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) blk: {
+            const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
+                std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
+                break :blk;
+            };
+            ptr.toggleFlag();
         }
 
         this.camera.tick();
@@ -248,7 +314,7 @@ const Board = struct {
         while (chunk_x < 5) : (chunk_x += 1) {
             var chunk_y: i32 = -5;
             while (chunk_y < 5) : (chunk_y += 1) {
-                var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .default });
+                var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
                 for (0..this.chunk_bomb_count) |_| {
                     var found = false;
                     // blk just because i wanted to
@@ -485,6 +551,7 @@ pub const MenuManager = struct {
         const entry_vtable: ui.Node.VTable = .{
             .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
             .calculate_size = calculateSize,
+            .type_info = ui.Node.VTable.basicTypeInfo(EntryNode),
         };
 
         pub fn init(gpa: std.mem.Allocator, text: [:0]const u8) !*EntryNode {
@@ -570,7 +637,7 @@ pub const MenuManager = struct {
         deinit(@ptrCast(@alignCast(ptr)));
     }
 
-    const vtable: ui.Node.VTable = .{ .deinit = opaqueDeinit, .on_input = onInput };
+    const vtable: ui.Node.VTable = .{ .deinit = opaqueDeinit, .on_input = onInput, .type_info = ui.Node.VTable.basicTypeInfo(MenuManager) };
 
     fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
         const this: *MenuManager = @ptrCast(@alignCast(ptr));
@@ -644,6 +711,9 @@ pub fn main(init: std.process.Init) !void {
     var should_exit = false;
     var should_restart = false;
 
+    var inspector = try Inspector.init(init.gpa, screen_width, screen_height);
+    defer inspector.deinit();
+
     // TODO: for some reason when these are different values, things dont scale correctly. i dont know why yet
     var root = ui.RootNode{
         .screen_size = .init(screen_width, screen_height),
@@ -655,6 +725,7 @@ pub fn main(init: std.process.Init) !void {
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
+    try inspector.setRoot(root_node);
 
     //    var menu_data = ui.Menu.init(&.{
     //        try .init(init.gpa, "Resume", resumeFromMenu),
@@ -675,6 +746,9 @@ pub fn main(init: std.process.Init) !void {
             if (rl.isKeyPressed(.escape)) {
                 menu.in_menu = !menu.in_menu;
             }
+            if (rl.isKeyPressed(.p)) {
+                inspector.is_open = !inspector.is_open;
+            }
             if (!menu.in_menu) {
                 try board.tick();
             } else {
@@ -685,14 +759,18 @@ pub fn main(init: std.process.Init) !void {
             }
             rl.beginDrawing();
             defer rl.endDrawing();
-
-            rl.clearBackground(.black);
-            if (!menu.in_menu) {
-                try board.draw();
-            } else {
-                try root_node.draw();
+            {
+                inspector.beginDraw();
+                defer inspector.endDraw();
+                rl.clearBackground(.black);
+                if (!menu.in_menu) {
+                    try board.draw();
+                } else {
+                    try root_node.draw();
+                }
+                rl.drawFPS(0, 0);
             }
-            rl.drawFPS(0, 0);
+            try inspector.draw();
         }
         var cont = false;
         while (!(should_exit or cont or should_restart or rl.windowShouldClose())) {
