@@ -633,11 +633,12 @@ pub const MenuManager = struct {
         this.gpa.destroy(this);
     }
 
-    fn opaqueDeinit(ptr: *anyopaque) void {
-        deinit(@ptrCast(@alignCast(ptr)));
-    }
 
-    const vtable: ui.Node.VTable = .{ .deinit = opaqueDeinit, .on_input = onInput, .type_info = ui.Node.VTable.basicTypeInfo(MenuManager) };
+    const vtable: ui.Node.VTable = .{
+        .deinit = ui.Node.VTable.basicOpaqueDeinit(MenuManager),
+        .on_input = onInput,
+        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager)
+    };
 
     fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
         const this: *MenuManager = @ptrCast(@alignCast(ptr));

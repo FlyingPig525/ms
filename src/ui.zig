@@ -287,9 +287,15 @@ pub const Node = struct {
         /// Allows automatic cleanup of a custom node's resources.
         ///
         /// Any node that allocates memory or requires any other cleanup after use should provide a `deinit` function.
+        ///
+        /// For an easy implementation, use `Node.VTable.basicOpaqueDeinit`.
         // i dont know why i didnt make this one nullable, but im too lazy to change it now
+        //
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
-        /// Used for the inspector.
+        /// The only required vtable function. This returns various info about the node's manager, which is then used
+        /// for the inspector.
+        ///
+        /// For an easy implementation, use `Node.VTable.basicTypeInfo`
         type_info: *const fn () NodeInfo,
 
         pub const nop: VTable = .{};
@@ -485,13 +491,9 @@ pub const TextNode = struct {
         this.gpa.destroy(this);
     }
 
-    fn opaqueDeinit(this: *anyopaque) void {
-        deinit(@ptrCast(@alignCast(this)));
-    }
-
     pub const vtable: Node.VTable = .{
         .draw = draw,
-        .deinit = opaqueDeinit,
+        .deinit = Node.VTable.basicOpaqueDeinit(TextNode),
         .calculate_size = calculateSize,
         .type_info = Node.VTable.basicTypeInfo(TextNode),
     };
@@ -527,7 +529,7 @@ pub const LayoutNode = struct {
     gpa: std.mem.Allocator,
 
     const vtable: Node.VTable = .{
-        .deinit = opaqueDeinit,
+        .deinit = Node.VTable.basicOpaqueDeinit(LayoutNode),
         .calculate_size = calculateSize,
         .type_info = Node.VTable.basicTypeInfo(LayoutNode),
     };
@@ -543,10 +545,6 @@ pub const LayoutNode = struct {
 
     pub fn deinit(this: *LayoutNode) void {
         this.gpa.destroy(this);
-    }
-
-    fn opaqueDeinit(ptr: *anyopaque) void {
-        deinit(@ptrCast(@alignCast(ptr)));
     }
 
     pub fn toNode(this: *LayoutNode) !*Node {
