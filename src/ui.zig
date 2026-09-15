@@ -23,8 +23,9 @@ pub const Node = struct {
     tools: *const DrawTools,
     space: Space,
     children: std.ArrayList(*Node),
-    parent: *Node,
+    parent: ?*Node,
     gpa: std.mem.Allocator,
+    id: ?[:0]const u8,
 
     pub fn init(gpa: std.mem.Allocator, manager: *anyopaque, space: Space, vtable: *const VTable) !*Node {
         var node = try gpa.create(Node);
@@ -35,6 +36,8 @@ pub const Node = struct {
         node.space = space;
         node.children = .empty;
         node.gpa = gpa;
+        node.parent = null;
+        node.id = null;
         return node;
     }
 
@@ -46,6 +49,7 @@ pub const Node = struct {
         }
         this.vtable.deinit(this.manager);
         this.children.deinit(this.gpa);
+        if (this.id) |id| this.gpa.free(id);
         this.gpa.destroy(this);
     }
 
@@ -58,11 +62,21 @@ pub const Node = struct {
         if (child.vtable.parented) |i| try i(child.manager, child, this);
     }
 
+    pub fn addChildAd(this: *Node, child: *Node, offset: rl.Vector2) !void {
+        child.space.offset = offset;
+        try this.addChild(child);
+    }
+
     /// Removes and deinitializes the child at index `i` and moves all children of a higher index down to fill
     /// the spot.
     pub fn removeChild(this: *Node, i: usize) void {
         const child = this.children.orderedRemove(i);
         child.deinit();
+    }
+
+    /// Sets this node's id. Dupes `id` into ram.
+    pub fn setId(this: *Node, id: [:0]const u8) !void {
+        this.id = try this.gpa.dupeZ(u8, id);
     }
 
     pub const Space = struct {
@@ -108,21 +122,21 @@ pub const Node = struct {
         // For example, if the node has a size `.{ .x = 128, .y = 64 }`, the center would be `.{ .x = 64, .y = 32 }`.
 
         fn bubbleScaleSize(this: *Node, size: rl.Vector2) rl.Vector2 {
-            return this.parent.tools.scale_size(this.parent, size);
+            return this.parent.?.tools.scale_size(this.parent.?, size);
         }
 
         fn bubbleTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
             const true_pos = pos.add(this.space.offset);
-            this.parent.tools.texture(this.parent, texture, true_pos, scale, tint);
+            this.parent.?.tools.texture(this.parent.?, texture, true_pos, scale, tint);
         }
 
         fn bubbleMeasureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
-            return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
+            return this.parent.?.tools.measure_text(this.parent.?, font, text, font_size, spacing);
         }
 
         fn bubbleText(this: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
             const true_pos = pos.add(this.space.offset);
-            this.parent.tools.text(this.parent, font, text, true_pos, font_size, spacing, tint);
+            this.parent.?.tools.text(this.parent.?, font, text, true_pos, font_size, spacing, tint);
         }
 
         fn bubbleRect(this: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -132,7 +146,7 @@ pub const Node = struct {
                 .width = rect.width,
                 .height = rect.height,
             };
-            this.parent.tools.rect(this.parent, true_rect, color);
+            this.parent.?.tools.rect(this.parent.?, true_rect, color);
         }
 
         fn bubbleRectLines(this: *Node, rect: rl.Rectangle, thickness: f32, color: rl.Color) void {
@@ -142,18 +156,18 @@ pub const Node = struct {
                 .width = rect.width,
                 .height = rect.height,
             };
-            this.parent.tools.rect_lines(this.parent, true_rect, thickness, color);
+            this.parent.?.tools.rect_lines(this.parent.?, true_rect, thickness, color);
         }
 
         fn bubbleLine(this: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
             const true_start = start.add(this.space.offset);
             const true_end = end.add(this.space.offset);
-            this.parent.tools.line(this.parent, true_start, true_end, thickness, color);
+            this.parent.?.tools.line(this.parent.?, true_start, true_end, thickness, color);
         }
 
         fn bubbleCircle(this: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void {
             const true_center = center.add(this.space.offset);
-            this.parent.tools.circle(this.parent, true_center, radius, color);
+            this.parent.?.tools.circle(this.parent.?, true_center, radius, color);
         }
     };
 
@@ -168,7 +182,7 @@ pub const Node = struct {
             .width = rect.width * this.space.size.x,
             .height = rect.height * this.space.size.y,
         };
-        this.parent.tools.rect(this.parent, true_rect, color);
+        this.parent.?.tools.rect(this.parent.?, true_rect, color);
     }
 
     /// Draws a rectangle outline in the space of this node
@@ -182,7 +196,7 @@ pub const Node = struct {
             .width = rect.width * this.space.size.x,
             .height = rect.height * this.space.size.y,
         };
-        this.parent.tools.rect_lines(this.parent, true_rect, thickness, color);
+        this.parent.?.tools.rect_lines(this.parent.?, true_rect, thickness, color);
     }
 
     /// Draws a line in the space of this node
@@ -192,7 +206,7 @@ pub const Node = struct {
     pub fn drawLine(this: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
         const true_start = start.multiply(this.space.size).add(this.space.offset);
         const true_end = end.multiply(this.space.size).add(this.space.offset);
-        this.parent.tools.line(this.parent, true_start, true_end, thickness, color);
+        this.parent.?.tools.line(this.parent.?, true_start, true_end, thickness, color);
     }
 
     /// Draws a circle in the space of this node
@@ -201,7 +215,7 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawCircle(this: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void {
         const true_center = center.multiply(this.space.size).add(this.space.offset);
-        this.parent.tools.circle(this.parent, true_center, radius, color);
+        this.parent.?.tools.circle(this.parent.?, true_center, radius, color);
     }
 
     /// Draws a circle in the space of this node
@@ -210,7 +224,7 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawText(this: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
-        this.parent.tools.text(this.parent, font, text, true_pos, font_size, spacing, tint);
+        this.parent.?.tools.text(this.parent.?, font, text, true_pos, font_size, spacing, tint);
     }
 
     /// Draws a texture in the space of this node
@@ -219,18 +233,18 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
-        this.parent.tools.texture(this.parent, texture, true_pos, scale, tint);
+        this.parent.?.tools.texture(this.parent.?, texture, true_pos, scale, tint);
     }
 
     /// Measures the size of text. Bubbles up until it finds an implementation of `DrawTools.measure_text`, generally
     /// a `RootNode`, returning the size of the text in terms of the `RootNode`'s scale-space.
     pub fn measureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
-        return this.parent.tools.measure_text(this.parent, font, text, font_size, spacing);
+        return this.parent.?.tools.measure_text(this.parent.?, font, text, font_size, spacing);
     }
 
     /// Scales the provided size to that of the scale-space.
     pub fn scaleSize(this: *Node, size: rl.Vector2) rl.Vector2 {
-        return this.parent.tools.scale_size(this.parent, size);
+        return this.parent.?.tools.scale_size(this.parent.?, size);
     }
 
     /// Loops through each child, calling `calculateSize`, adding the result to this node's calculated size.
@@ -250,6 +264,38 @@ pub const Node = struct {
             }
             this.space.size = size.add(largest_offset);
         }
+    }
+
+    pub fn recalculateNodeGraphSize(this: *Node) !void {
+        if (this.parent == null) {
+            try this.calculateSize();
+        } else {
+            try this.parent.?.calculateSize();
+        }
+    }
+
+    pub fn move(this: *Node, move_vec: rl.Vector2) !void {
+        if (move_vec.equals(.zero())) return;
+        this.space.offset = this.space.offset.add(move_vec);
+        try this.recalculateNodeGraphSize();
+    }
+
+    pub fn setOffset(this: *Node, pos: rl.Vector2) !void {
+        if (pos.equals(this.space.offset)) return;
+        this.space.offset = pos;
+        try this.recalculateNodeGraphSize();
+    }
+
+    pub fn resize(this: *Node, size_vec: rl.Vector2) !void {
+        if (size_vec.equals(this.space.size)) return;
+        this.space.size = size_vec;
+        try this.recalculateNodeGraphSize();
+    }
+
+    pub fn addSize(this: *Node, addition: rl.Vector2) !void {
+        if (addition.equals(.zero())) return;
+        this.space.size = this.space.size.add(addition);
+        try this.recalculateNodeGraphSize();
     }
 
     // i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
@@ -293,20 +339,41 @@ pub const Node = struct {
         //
         deinit: *const fn (this: *anyopaque) void = nopDeinit,
         /// The only required vtable function. This returns various info about the node's manager, which is then used
-        /// for the inspector.
+        /// for the inspector. Result must be deinitialized.
         ///
         /// For an easy implementation, use `Node.VTable.basicTypeInfo`
-        type_info: *const fn () NodeInfo,
+        type_info: *const fn (this: *anyopaque, gpa: std.mem.Allocator) anyerror!NodeInfo,
 
         pub const nop: VTable = .{};
 
         fn nopDeinit(_: *anyopaque) void {}
-        pub fn basicTypeInfo(comptime T: type) *const fn () NodeInfo {
+        pub fn basicTypeInfo(comptime T: type, comptime fields: []const [:0]const u8) *const fn (this: *anyopaque, gpa: std.mem.Allocator) anyerror!NodeInfo {
             return struct {
-                pub fn typeInfo() NodeInfo {
-                    return .{
-                        .name = @typeName(T),
-                    };
+                const names = fields;
+                pub fn typeInfo(ptr: *anyopaque, gpa: std.mem.Allocator) !NodeInfo {
+                    const this: *T = @ptrCast(@alignCast(ptr));
+                    if (fields.len > 0) {
+                        const props = try gpa.alloc(NodeInfo.Property, fields.len);
+                        inline for (fields, 0..) |field, i| {
+                            props[i] = switch (@FieldType(T, field)) {
+                                i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
+                                f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
+                                bool => .{ .boolean = .{ .name = names[i], .ptr = &@field(this, field) } },
+                                [:0]const u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
+                                rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = &@field(this, field) } },
+                                rl.Color => .{ .color = .{ .name = names[i], .ptr = &@field(this, field) } },
+                                else => @compileError("Cannot convert field " ++ @typeName(@FieldType(T, field)) ++ " to a property"),
+                            };
+                        }
+                        return .{
+                            .name = @typeName(T),
+                            .properties = props,
+                        };
+                    } else {
+                        return .{
+                            .name = @typeName(T),
+                        };
+                    }
                 }
             }.typeInfo;
         }
@@ -321,6 +388,27 @@ pub const Node = struct {
 
     pub const NodeInfo = struct {
         name: [:0]const u8,
+        properties: ?[]const Property = null,
+
+        pub fn deinit(this: NodeInfo, gpa: std.mem.Allocator) void {
+            if (this.properties) |p| {
+                gpa.free(p);
+            }
+        }
+        fn Named(comptime PtrT: type) type {
+            return struct {
+                name: [:0]const u8,
+                ptr: PtrT,
+            };
+        }
+        pub const Property = union(enum) {
+            int: Named(*i32),
+            float: Named(*f32),
+            boolean: Named(*bool),
+            string: Named([:0]const u8),
+            vector: Named(*rl.Vector2),
+            color: Named(*rl.Color),
+        };
     };
 
     pub fn onClick(this: *Node, button: rl.MouseButton, relative_pos: rl.Vector2) !void {
@@ -383,7 +471,7 @@ pub const RootNode = struct {
     };
     pub const vtable: Node.VTable = .{
         .add_child = addChild,
-        .type_info = Node.VTable.basicTypeInfo(RootNode),
+        .type_info = Node.VTable.basicTypeInfo(RootNode, &.{ "screen_size", "true_size" }),
     };
 
     pub fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -495,7 +583,7 @@ pub const TextNode = struct {
         .draw = draw,
         .deinit = Node.VTable.basicOpaqueDeinit(TextNode),
         .calculate_size = calculateSize,
-        .type_info = Node.VTable.basicTypeInfo(TextNode),
+        .type_info = Node.VTable.basicTypeInfo(TextNode, &.{ "text", "font_size", "tint" }),
     };
     pub fn toNode(this: *TextNode) !*Node {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
@@ -531,7 +619,7 @@ pub const LayoutNode = struct {
     const vtable: Node.VTable = .{
         .deinit = Node.VTable.basicOpaqueDeinit(LayoutNode),
         .calculate_size = calculateSize,
-        .type_info = Node.VTable.basicTypeInfo(LayoutNode),
+        .type_info = Node.VTable.basicTypeInfo(LayoutNode, &.{"gap"}),
     };
 
     pub fn init(gpa: std.mem.Allocator, gap: f32, direction: Direction, flow: Flow) !*LayoutNode {
@@ -693,7 +781,7 @@ pub const ImageNode = struct {
         .deinit = Node.VTable.basicOpaqueDeinit(ImageNode),
         .draw = draw,
         .calculate_size = calculateSize,
-        .type_info = Node.VTable.basicTypeInfo(ImageNode),
+        .type_info = Node.VTable.basicTypeInfo(ImageNode, &.{"loaded"}),
     };
     pub fn toNode(this: *ImageNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
@@ -725,7 +813,7 @@ pub const RectNode = struct {
     const vtable: Node.VTable = .{
         .draw = draw,
         .deinit = Node.VTable.basicOpaqueDeinit(RectNode),
-        .type_info = Node.VTable.basicTypeInfo(RectNode),
+        .type_info = Node.VTable.basicTypeInfo(RectNode, &.{"color"}),
     };
 
     pub fn init(gpa: std.mem.Allocator, color: rl.Color) !*RectNode {
@@ -774,7 +862,7 @@ pub const TextureNode = struct {
         .deinit = Node.VTable.basicOpaqueDeinit(TextureNode),
         .draw = draw,
         .calculate_size = calculateSize,
-        .type_info = Node.VTable.basicTypeInfo(TextureNode),
+        .type_info = Node.VTable.basicTypeInfo(TextureNode, &.{ "scale", "owns_texture" }),
     };
     pub fn toNode(this: *TextureNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);

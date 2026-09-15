@@ -551,7 +551,7 @@ pub const MenuManager = struct {
         const entry_vtable: ui.Node.VTable = .{
             .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
             .calculate_size = calculateSize,
-            .type_info = ui.Node.VTable.basicTypeInfo(EntryNode),
+            .type_info = ui.Node.VTable.basicTypeInfo(EntryNode, &.{ "selected" }),
         };
 
         pub fn init(gpa: std.mem.Allocator, text: [:0]const u8) !*EntryNode {
@@ -559,8 +559,10 @@ pub const MenuManager = struct {
             node.gpa = gpa;
             node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
             node.text_node = try node.text.toNode();
+            try node.text_node.setId("entry-text");
             node.rect = try ui.RectNode.init(gpa, .blank);
             node.rect_node = try node.rect.toNode();
+            try node.rect_node.setId("selector-square");
             node.rect_node.space.size.x = 3;
             node.selected = false;
             return node;
@@ -612,16 +614,19 @@ pub const MenuManager = struct {
         node.res = try EntryNode.init(gpa, "Resume");
         node.res.select();
         node.res_node = try node.res.toNode();
+        try node.res_node.setId("resume");
         node.res_node.space.offset.x = 12;
         try node.layout_node.addChild(node.res_node);
 
         node.restart = try EntryNode.init(gpa, "Restart");
         node.restart_node = try node.restart.toNode();
+        try node.restart_node.setId("restart");
         node.restart_node.space.offset.x = 12;
         try node.layout_node.addChild(node.restart_node);
 
         node.exit = try EntryNode.init(gpa, "Exit");
         node.exit_node = try node.exit.toNode();
+        try node.exit_node.setId("exit");
         node.exit_node.space.offset.x = 12;
         try node.layout_node.addChild(node.exit_node);
 
@@ -637,7 +642,7 @@ pub const MenuManager = struct {
     const vtable: ui.Node.VTable = .{
         .deinit = ui.Node.VTable.basicOpaqueDeinit(MenuManager),
         .on_input = onInput,
-        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager)
+        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager, &.{})
     };
 
     fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
