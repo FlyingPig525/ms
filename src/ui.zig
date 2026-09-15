@@ -117,7 +117,7 @@ pub const Node = struct {
             .scale_size = bubbleScaleSize,
         };
 
-        // Bubble versions of the node draw functions draw to the absolute space of this node.
+        // Bubble versions of the node draw functions draw to the absolute space of this node. These do NOT deal with node-space.
         //
         // For example, if the node has a size `.{ .x = 128, .y = 64 }`, the center would be `.{ .x = 64, .y = 32 }`.
 
@@ -182,7 +182,9 @@ pub const Node = struct {
             .width = rect.width * this.space.size.x,
             .height = rect.height * this.space.size.y,
         };
-        this.parent.?.tools.rect(this.parent.?, true_rect, color);
+        if (this.parent) |p| {
+            p.tools.rect(p, true_rect, color);
+        } else this.tools.rect(this, true_rect, color);
     }
 
     /// Draws a rectangle outline in the space of this node
@@ -196,7 +198,9 @@ pub const Node = struct {
             .width = rect.width * this.space.size.x,
             .height = rect.height * this.space.size.y,
         };
-        this.parent.?.tools.rect_lines(this.parent.?, true_rect, thickness, color);
+        if (this.parent) |p| {
+            p.tools.rect_lines(p, true_rect, thickness, color);
+        } else this.tools.rect_lines(this, true_rect, thickness, color);
     }
 
     /// Draws a line in the space of this node
@@ -206,7 +210,9 @@ pub const Node = struct {
     pub fn drawLine(this: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
         const true_start = start.multiply(this.space.size).add(this.space.offset);
         const true_end = end.multiply(this.space.size).add(this.space.offset);
-        this.parent.?.tools.line(this.parent.?, true_start, true_end, thickness, color);
+        if (this.parent) |p| {
+            p.tools.line(p, true_start, true_end, thickness, color);
+        } else this.tools.line(this, true_start, true_end, thickness, color);
     }
 
     /// Draws a circle in the space of this node
@@ -215,7 +221,9 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawCircle(this: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void {
         const true_center = center.multiply(this.space.size).add(this.space.offset);
-        this.parent.?.tools.circle(this.parent.?, true_center, radius, color);
+        if (this.parent) |p| {
+            p.tools.circle(p, true_center, radius, color);
+        } else this.tools.circle(this, true_center, radius, color);
     }
 
     /// Draws a circle in the space of this node
@@ -224,7 +232,9 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawText(this: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
-        this.parent.?.tools.text(this.parent.?, font, text, true_pos, font_size, spacing, tint);
+        if (this.parent) |p| {
+            p.tools.text(p, font, text, true_pos, font_size, spacing, tint);
+        } else this.tools.text(this, font, text, true_pos, font_size, spacing, tint);
     }
 
     /// Draws a texture in the space of this node
@@ -233,13 +243,18 @@ pub const Node = struct {
     /// to the center of this node, set the x and y to 0.5
     pub fn drawTexture(this: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
-        this.parent.?.tools.texture(this.parent.?, texture, true_pos, scale, tint);
+        if (this.parent) |p| {
+            p.tools.texture(p, texture, true_pos, scale, tint);
+        } else this.tools.texture(this, texture, true_pos, scale, tint);
     }
 
     /// Measures the size of text. Bubbles up until it finds an implementation of `DrawTools.measure_text`, generally
     /// a `RootNode`, returning the size of the text in terms of the `RootNode`'s scale-space.
     pub fn measureText(this: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
-        return this.parent.?.tools.measure_text(this.parent.?, font, text, font_size, spacing);
+        if (this.parent) |parent| {
+            return parent.tools.measure_text(parent, font, text, font_size, spacing);
+        }
+        return this.tools.measure_text(this, font, text, font_size, spacing);
     }
 
     /// Scales the provided size to that of the scale-space.
