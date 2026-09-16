@@ -68,9 +68,11 @@ const GridSpace = union(GridSpace.Type) {
     }
 
     pub fn fullFlagReveal(this: *GridSpace, info: Board.AdjacentInformation) !bool {
+        if (this.hidden()) return false;
         if (this.* == .number) {
             const value = this.number.value;
             var flagged_cells: u8 = 0;
+            var hidden_cells: u8 = 0;
             {
                 comptime var x = -1;
                 inline while (x <= 1) : (x += 1) {
@@ -78,19 +80,32 @@ const GridSpace = union(GridSpace.Type) {
                     inline while (y <= 1) : (y += 1) {
                         if (info.list.get(info.x + x, info.y + y)) |cell| {
                             if (cell.flagged()) flagged_cells += 1;
+                            if (cell.hidden()) hidden_cells += 1;
                         }
                     }
                 }
             }
+            if (hidden_cells == flagged_cells) return false;
             if (flagged_cells >= value) {
-                comptime var x = -1;
-                inline while (x <= 1) : (x += 1) {
-                    comptime var y = -1;
-                    inline while (y <= 1) : (y += 1) {
+                var x: i32 = -1;
+                while (x <= 1) : (x += 1) {
+                    var y: i32 = -1;
+                    while (y <= 1) : (y += 1) {
                         if (info.list.getPtr(info.x + x, info.y + y)) |cell| blk: {
                             if (cell.flagged()) break :blk;
                             const t = try cell.reveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list });
                             if (t == .mine) return true;
+                        }
+                    }
+                }
+                x = -1;
+                while (x <= 1) : (x += 1) {
+                    var y: i32 = -1;
+                    while (y <= 1) : (y += 1) {
+                        if (info.list.getPtr(info.x + x, info.y + y)) |cell| {
+                            if (cell.* == .number) {
+                                if (try cell.fullFlagReveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list })) return true;
+                            }
                         }
                     }
                 }
@@ -227,6 +242,13 @@ const Board = struct {
     cursor_pos: IVec2 = .{ .x = 0, .y = 0 },
     camera: *Camera,
     end_thyself: bool = false,
+    dead: bool = false,
+    mode: Mode = .flag_only,
+
+    pub const Mode = enum {
+        default,
+        flag_only,
+    };
 
     pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera) !Board {
         return .{
@@ -273,11 +295,12 @@ const Board = struct {
             this.camera.camera.zoom = 1.8719;
         }
 
-        if (rl.isKeyPressed(.t)) {
-            std.log.debug("{d}", .{this.camera.camera.zoom});
-        }
-
         if (rl.isKeyPressed(.space)) blk: {
+            if (this.dead) {
+                this.end_thyself = true;
+                break :blk;
+            }
+            if (this.mode == .flag_only and !this.cursor_pos.eql(.{ .x = 1, .y = 1 })) break :blk;
             const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
                 std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
                 break :blk;
@@ -285,22 +308,36 @@ const Board = struct {
             if (ptr.flagged()) break :blk;
             if (!ptr.hidden() and ptr.* == .number) {
                 if (try ptr.fullFlagReveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this })) {
-                    this.end_thyself = true;
+                    this.dead = true;
                 }
             } else {
                 const t = try ptr.reveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this });
                 if (t == .mine) {
-                    this.end_thyself = true;
+                    this.dead = true;
                 }
             }
         }
 
         if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) blk: {
+            if (this.dead) break :blk;
             const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
                 std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
                 break :blk;
             };
             ptr.toggleFlag();
+            if (this.mode == .flag_only) {
+                var x: i32 = -1;
+                loop: while (x <= 1) : (x += 1) {
+                    var y: i32 = -1;
+                    while (y <= 1) : (y += 1) {
+                        const cell = this.getPtr(this.cursor_pos.x + x, this.cursor_pos.y + y) orelse continue;
+                        if (try cell.fullFlagReveal(.{ .x = this.cursor_pos.x + x, .y = this.cursor_pos.y + y, .list = this })) {
+                            this.dead = true;
+                            break :loop;
+                        }
+                    }
+                }
+            }
         }
 
         this.camera.tick();
@@ -315,6 +352,8 @@ const Board = struct {
             var chunk_y: i32 = -5;
             while (chunk_y < 5) : (chunk_y += 1) {
                 var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
+                defer this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
+                if (this.mode == .flag_only and chunk_x == 0 and chunk_y == 0) continue;
                 for (0..this.chunk_bomb_count) |_| {
                     var found = false;
                     // blk just because i wanted to
@@ -330,7 +369,6 @@ const Board = struct {
                         found = true;
                     }
                 }
-                this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
             }
         }
         chunk_x = -5;
@@ -390,6 +428,16 @@ const Board = struct {
         const chunk_pos = this.cursor_pos.floorDivValue(chunk_size);
         const chunk_text = try std.fmt.bufPrintZ(&buf, "Chunk: {d} {d}", .{ chunk_pos.x, chunk_pos.y });
         rl.drawText(chunk_text, 0, 50, 24, .white);
+        if (this.dead) {
+            const screen_width = rl.getScreenWidth();
+            const str = "You are dead";
+            const default = try rl.getFontDefault();
+            const width = rl.measureTextEx(default, str, 64, @floatFromInt(default.glyphPadding));
+            rl.drawText(str, @divFloor(screen_width, 2) - @as(i32, @trunc(width.x / 2)), 128, 64, .white);
+            const str2 = "Press space to restart";
+            const width2 = rl.measureText(str2, 64);
+            rl.drawText(str2, @divFloor(screen_width, 2) - @divFloor(width2, 2), 128 + @as(i32, @trunc(width.y)) + 15, 64, .white);
+        }
     }
 
     pub fn get(this: Board, x: i32, y: i32) ?GridSpace {
@@ -642,7 +690,7 @@ pub const MenuManager = struct {
     const vtable: ui.Node.VTable = .{
         .deinit = ui.Node.VTable.basicOpaqueDeinit(MenuManager),
         .on_input = onInput,
-        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager, &.{})
+        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager, &.{ "in_menu" })
     };
 
     fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
@@ -650,7 +698,7 @@ pub const MenuManager = struct {
         switch (key) {
             .j => this.entry = meta.nextEnumValueWrap(this.entry),
             .k => this.entry = meta.prevEnumValueWrap(this.entry),
-            .space, .enter => {
+            .space => {
                 switch (this.entry) {
                     .res => {
                         this.close();
@@ -777,17 +825,6 @@ pub fn main(init: std.process.Init) !void {
                 rl.drawFPS(0, 0);
             }
             try inspector.draw();
-        }
-        var cont = false;
-        while (!(should_exit or cont or should_restart or rl.windowShouldClose())) {
-            if (rl.isKeyPressed(.enter) or rl.isKeyPressed(.space)) {
-                cont = true;
-            }
-            rl.beginDrawing();
-            defer rl.endDrawing();
-            rl.clearBackground(.black);
-
-            rl.drawText("you suck", 0, 0, 50, .white);
         }
     }
 }

@@ -285,7 +285,7 @@ pub const Node = struct {
         if (this.parent == null) {
             try this.calculateSize();
         } else {
-            try this.parent.?.calculateSize();
+            try this.parent.?.recalculateNodeGraphSize();
         }
     }
 
@@ -357,38 +357,39 @@ pub const Node = struct {
         /// for the inspector. Result must be deinitialized.
         ///
         /// For an easy implementation, use `Node.VTable.basicTypeInfo`
-        type_info: *const fn (this: *anyopaque, gpa: std.mem.Allocator) anyerror!NodeInfo,
+        type_info: *const fn (this: *anyopaque, node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo,
 
         pub const nop: VTable = .{};
 
         fn nopDeinit(_: *anyopaque) void {}
-        pub fn basicTypeInfo(comptime T: type, comptime fields: []const [:0]const u8) *const fn (this: *anyopaque, gpa: std.mem.Allocator) anyerror!NodeInfo {
+        const offset_name = "offset";
+        const size_name = "size";
+        const id_name = "id";
+        const null_str = "null";
+        pub fn basicTypeInfo(comptime T: type, comptime fields: []const [:0]const u8) *const fn (this: *anyopaque, node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo {
             return struct {
                 const names = fields;
-                pub fn typeInfo(ptr: *anyopaque, gpa: std.mem.Allocator) !NodeInfo {
+                pub fn typeInfo(ptr: *anyopaque, node: *Node, gpa: std.mem.Allocator) !NodeInfo {
                     const this: *T = @ptrCast(@alignCast(ptr));
-                    if (fields.len > 0) {
-                        const props = try gpa.alloc(NodeInfo.Property, fields.len);
-                        inline for (fields, 0..) |field, i| {
-                            props[i] = switch (@FieldType(T, field)) {
-                                i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
-                                f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
-                                bool => .{ .boolean = .{ .name = names[i], .ptr = &@field(this, field) } },
-                                [:0]const u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
-                                rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = &@field(this, field) } },
-                                rl.Color => .{ .color = .{ .name = names[i], .ptr = &@field(this, field) } },
-                                else => @compileError("Cannot convert field " ++ @typeName(@FieldType(T, field)) ++ " to a property"),
-                            };
-                        }
-                        return .{
-                            .name = @typeName(T),
-                            .properties = props,
-                        };
-                    } else {
-                        return .{
-                            .name = @typeName(T),
+                    const props = try gpa.alloc(NodeInfo.Property, fields.len + 3);
+                    props[0] = .{ .string = .{ .name = id_name, .ptr = node.id orelse null_str } };
+                    props[1] = .{ .vector = .{ .name = offset_name, .ptr = &node.space.offset } };
+                    props[2] = .{ .vector = .{ .name = size_name, .ptr = &node.space.size } };
+                    inline for (fields, 0..) |field, i| {
+                        props[i + props.len - fields.len] = switch (@FieldType(T, field)) {
+                            i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            bool => .{ .boolean = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            [:0]const u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
+                            rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            rl.Color => .{ .color = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            else => @compileError("Cannot convert field " ++ @typeName(@FieldType(T, field)) ++ " to a property"),
                         };
                     }
+                    return .{
+                        .name = @typeName(T),
+                        .properties = props,
+                    };
                 }
             }.typeInfo;
         }

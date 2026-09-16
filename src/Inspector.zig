@@ -87,27 +87,58 @@ pub const Entry = struct {
         int: struct {
             editing: bool = false,
         },
+        vector: struct {
+            x: FloatState,
+            y: FloatState,
+        },
 
         pub const FloatState = struct {
             // not an array to conserve size
             str: [:0]u8,
             editing: bool = false,
             accessed: bool = false,
+
+            pub fn init(gpa: std.mem.Allocator) !FloatState {
+                return .{ .str = try gpa.allocSentinel(u8, 32, 0) };
+            }
+
+            pub fn deinit(this: FloatState, gpa: std.mem.Allocator) void {
+                gpa.free(this.str);
+            }
+
+            pub fn draw(this: *FloatState, offset: rl.Vector2, ptr: *f32, name: [:0]const u8) !void {
+                if (!this.accessed) {
+                    // holy cursed
+                    @memset(this.str, 0);
+                    _ = try std.fmt.bufPrintZ(this.str, "{d:0<0.2}", .{ptr.*});
+                    this.accessed = true;
+                }
+                const width: f32 = @floatFromInt(rgui.getTextWidth(name));
+                if (rgui.valueBoxFloat(.init(offset.x + width, offset.y, 100, 30), name, this.str, ptr, this.editing) > 0) {
+                    this.editing = !this.editing;
+                }
+            }
         };
 
         pub fn deinit(this: InfoState, gpa: std.mem.Allocator) void {
             switch (this) {
                 .float => |f| {
-                    gpa.free(f.str);
+                    f.deinit(gpa);
+                },
+                .vector => |v| {
+                    v.x.deinit(gpa);
+                    v.y.deinit(gpa);
                 },
                 else => {},
             }
         }
 
         pub fn floatState(gpa: std.mem.Allocator) !InfoState {
-            return .{ .float = .{
-                .str = try gpa.allocSentinel(u8, 32, 0),
-            } };
+            return .{ .float = try .init(gpa) };
+        }
+
+        pub fn vecState(gpa: std.mem.Allocator) !InfoState {
+            return .{ .vector = .{ .x = try .init(gpa), .y = try .init(gpa) } };
         }
     };
 
@@ -141,28 +172,39 @@ pub const Entry = struct {
             for (p, 0..) |prop, idx| {
                 switch (prop) {
                     .boolean => |b| {
-                        _ = rgui.checkBox(.init(5, 5 + offset.y + i * 30, 30, 30), b.name, b.ptr);
+                        _ = rgui.checkBox(.init(5, 5 + offset.y + i * 35, 30, 30), b.name, b.ptr);
                     },
                     .int => |int| {
-                        _ = rgui.valueBox(.init(5, 5 + offset.y + i * 30, 300, 30), int.name, int.ptr, std.math.minInt(i32), std.math.maxInt(i32), state[idx].int.editing);
+                        _ = rgui.valueBox(.init(5, 5 + offset.y + i * 35, 100, 30), int.name, int.ptr, std.math.minInt(i32), std.math.maxInt(i32), state[idx].int.editing);
                     },
                     .float => |f| {
-                        if (!state[idx].float.accessed) {
+                        try state[idx].float.draw(offset.add(.init(5, 5 + i * 35)), f.ptr, f.name);
+                        //if (!state[idx].float.accessed) {
                             // holy cursed
-                            @memset(state[idx].float.str, 0);
-                            _ = try std.fmt.bufPrintZ(state[idx].float.str, "{d:0<0.2}", .{f.ptr.*});
-                            state[idx].float.accessed = true;
-                        }
-                        const width: f32 = @floatFromInt(rgui.getTextWidth(f.name));
-                        if (rgui.valueBoxFloat(.init(5 + width, 5 + offset.y + i * 30, 300, 30), f.name, state[idx].float.str, f.ptr, state[idx].float.editing) > 0) {
-                            state[idx].float.editing = !state[idx].float.editing;
-                        }
+                            //@memset(state[idx].float.str, 0);
+                            //_ = try std.fmt.bufPrintZ(state[idx].float.str, "{d:0<0.2}", .{f.ptr.*});
+                            //state[idx].float.accessed = true;
+                        //}
+                        //const width: f32 = @floatFromInt(rgui.getTextWidth(f.name));
+                        //if (rgui.valueBoxFloat(.init(5 + width, 5 + offset.y + i * 30, 300, 30), f.name, state[idx].float.str, f.ptr, state[idx].float.editing) > 0) {
+                            //state[idx].float.editing = !state[idx].float.editing;
+                        //}
                     },
                     .string => |s| {
                         const width: f32 = @floatFromInt(rgui.getTextWidth(s.name) + rgui.getTextWidth(": \"") + rgui.getTextWidth(s.ptr) + rgui.getTextWidth("\"") + rgui.getStyle(.button, .text_padding) * 2);
                         const concat = try std.mem.concatWithSentinel(gpa, u8, &.{ s.name, ": \"", s.ptr, "\"" }, 0);
                         defer gpa.free(concat);
-                        _ = rgui.label(.init(5, 5 + offset.y + i * 30, width, 10), concat);
+                        _ = rgui.label(.init(5, 5 + offset.y + i * 35, width, 30), concat);
+                    },
+                    .vector => |v| {
+                        const v_state = &state[idx].vector;
+                        const width: f32 = @floatFromInt(rgui.getTextWidth(v.name) + rgui.getTextWidth(": ") + 8);
+                        const concat = try std.mem.concatWithSentinel(gpa, u8, &.{ v.name, ": " }, 0);
+                        defer gpa.free(concat);
+                        _ = rgui.label(.init(5, 5 + offset.y + i * 35, width, 30), concat);
+                        const x_w: f32 = @floatFromInt(rgui.getTextWidth("x"));
+                        try v_state.x.draw(offset.add(.init(5 + width, 5 + i * 35)), &v.ptr.x, "x");
+                        try v_state.y.draw(offset.add(.init(105 + width + x_w * 2, 5 + i * 35)), &v.ptr.y, "y");
                     },
                     else => {},
                 }
@@ -172,40 +214,10 @@ pub const Entry = struct {
     }
 
     pub fn drawFunctions(this: *Entry, offset: rl.Vector2, gap: f32, _: std.mem.Allocator) !void {
+        _ = gap;
         if (button(offset, 30, "Recalculate Node Graph")) {
-            this.node.recalculateNodeGraphSize() catch |err| std.log.err("error recalc {any}", .{ err });
+            this.node.recalculateNodeGraphSize() catch |err| std.log.err("error recalc {any}", .{err});
         }
-        const move_width = rgui.getTextWidth("Move") + rgui.getStyle(.button, .text_padding) * 3;
-        if (button(offset.add(.init(0, 30 + gap)), 30, "Move")) {
-            this.node.move(this.function_state.move_vec) catch |err| std.log.err("err move {any}", .{ err });
-        }
-        const off: f32 = @as(f32, @floatFromInt(move_width + rgui.getStyle(.button, .border_width) * 2)) + gap;
-        const move = &this.function_state.move_vec;
-        const move_x = &this.function_state.move_x;
-        if (!move_x.accessed) {
-            // holy cursed
-            @memset(move_x.str, 0);
-            _ = try std.fmt.bufPrintZ(move_x.str, "{d:0<0.2}", .{ move.x });
-            move_x.accessed = true;
-        }
-        if (rgui.valueBoxFloat(.init(offset.x + off, offset.y + 30 + gap, 100, 30), "x", move_x.str, &move.x, move_x.editing) > 0) {
-            move_x.editing = !move_x.editing;
-        }
-
-        const move_y = &this.function_state.move_y;
-        if (!move_y.accessed) {
-            // holy cursed
-            @memset(move_y.str, 0);
-            _ = try std.fmt.bufPrintZ(move_y.str, "{d:0<0.2}", .{ move.y });
-            move_y.accessed = true;
-        }
-        // i dont know why the actual width of the other valueboxfloat isnt 100, when it should be
-        if (rgui.valueBoxFloat(.init(offset.x + off * 2 + 65, offset.y + 30 + gap, 100, 30), "y", move_y.str, &move.y, move_y.editing) > 0) {
-            move_y.editing = !move_y.editing;
-        }
-
-
-        //if (rgui.valueBox(.init(offset.x + off, offset.y + 30 + gap, width, 30), &this.function_state.move_vec.x
     }
 
     fn button(pos: rl.Vector2, height: f32, text: [:0]const u8) bool {
@@ -218,7 +230,7 @@ pub const Entry = struct {
         for (node.children.items, 0..) |child, i| {
             children[i] = try Entry.init(gpa, child, inspector);
         }
-        const info = try node.vtable.type_info(node.manager, gpa);
+        const info = try node.vtable.type_info(node.manager, node, gpa);
         const state = if (info.properties) |p| try gpa.alloc(InfoState, p.len) else null;
         if (info.properties) |p| {
             for (p, 0..) |prop, i| {
@@ -228,6 +240,9 @@ pub const Entry = struct {
                     },
                     .int => {
                         state.?[i] = .{ .int = .{} };
+                    },
+                    .vector => {
+                        state.?[i] = try InfoState.vecState(gpa);
                     },
                     else => {
                         state.?[i] = .none;
