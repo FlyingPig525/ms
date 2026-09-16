@@ -62,7 +62,7 @@ pub const Node = struct {
         if (child.vtable.parented) |i| try i(child.manager, child, this);
     }
 
-    pub fn addChildAd(this: *Node, child: *Node, offset: rl.Vector2) !void {
+    pub fn addChildAt(this: *Node, child: *Node, offset: rl.Vector2) !void {
         child.space.offset = offset;
         try this.addChild(child);
     }
@@ -72,6 +72,20 @@ pub const Node = struct {
     pub fn removeChild(this: *Node, i: usize) void {
         const child = this.children.orderedRemove(i);
         child.deinit();
+    }
+
+    /// Removes and deinitializes the first child found with id `id`. Moves all children of a higher index down
+    /// to fill the spot.
+    /// Returns `true` when a child is removed.
+    pub fn removeChildId(this: *Node, id: [:0]const u8) bool {
+        for (this.children.items, 0..) |child, i| {
+            if (child.id == null) continue;
+            if (std.mem.eql(u8, child.id.?, id)) {
+                this.removeChild(i);
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Sets this node's id. Dupes `id` into ram.

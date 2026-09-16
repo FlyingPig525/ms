@@ -241,21 +241,22 @@ const Board = struct {
     arena: std.heap.ArenaAllocator,
     cursor_pos: IVec2 = .{ .x = 0, .y = 0 },
     camera: *Camera,
+    mode: Mode,
     end_thyself: bool = false,
     dead: bool = false,
-    mode: Mode = .flag_only,
 
     pub const Mode = enum {
         default,
         flag_only,
     };
 
-    pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera) !Board {
+    pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera, mode: Mode) !Board {
         return .{
             .scene = .empty,
             .chunk_bomb_count = chunk_bomb_count,
             .arena = .init(gpa),
             .camera = camera,
+            .mode = mode,
         };
     }
 
@@ -306,7 +307,7 @@ const Board = struct {
                 break :blk;
             };
             if (ptr.flagged()) break :blk;
-            if (!ptr.hidden() and ptr.* == .number) {
+            if (!ptr.hidden() and ptr.* == .number and this.mode != .flag_only) {
                 if (try ptr.fullFlagReveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this })) {
                     this.dead = true;
                 }
@@ -567,118 +568,215 @@ const Board = struct {
     }
 };
 
-pub const MenuManager = struct {
-    entry: Entry,
-    gpa: std.mem.Allocator,
-    in_menu: bool,
-    quit_flag: *bool,
-    restart_flag: *bool,
-    layout: *ui.LayoutNode,
-    layout_node: *ui.Node,
-    res: *EntryNode,
-    res_node: *ui.Node,
-    restart: *EntryNode,
-    restart_node: *ui.Node,
-    exit: *EntryNode,
-    exit_node: *ui.Node,
+fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*Manager, Enum) void) type {
+    if (@typeInfo(Enum) != .@"enum") @compileError("Enum must be an enum");
+    const enum_info = @typeInfo(Enum).@"enum";
+    const fields = enum_info.fields;
+    if (fields.len == 0) @compileError("Enum must have at least one field");
+    return struct {
+        const This = @This();
 
-    pub const Entry = enum(u8) {
-        res,
-        restart,
-        exit,
-    };
-
-    pub const EntryNode = struct {
         gpa: std.mem.Allocator,
-        text: *ui.TextNode,
-        text_node: *ui.Node,
-        rect: *ui.RectNode,
-        rect_node: *ui.Node,
-        selected: bool,
+        accept_input: bool,
+        active: Enum,
+        manager: *Manager,
+        layout: *ui.LayoutNode,
+        layout_node: *ui.Node,
+        entries: [fields.len]*EntryNode,
+        entry_nodes: [fields.len]*ui.Node,
 
-        const entry_vtable: ui.Node.VTable = .{
-            .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
-            .calculate_size = calculateSize,
-            .type_info = ui.Node.VTable.basicTypeInfo(EntryNode, &.{ "selected" }),
+        pub const EntryNode = struct {
+            gpa: std.mem.Allocator,
+            menu: *This,
+            text: *ui.TextNode,
+            text_node: *ui.Node,
+            rect: *ui.RectNode,
+            rect_node: *ui.Node,
+            selected: bool,
+
+            const entry_vtable: ui.Node.VTable = .{
+                .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
+                .calculate_size = calculateSize,
+                .type_info = ui.Node.VTable.basicTypeInfo(EntryNode, &.{"selected"}),
+            };
+
+            pub fn init(gpa: std.mem.Allocator, menu: *This, text: [:0]const u8) !*EntryNode {
+                const node = try gpa.create(EntryNode);
+                node.gpa = gpa;
+                node.menu = menu;
+                node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
+                node.text_node = try node.text.toNode();
+                try node.text_node.setId("entry-text");
+                node.rect = try ui.RectNode.init(gpa, .blank);
+                node.rect_node = try node.rect.toNode();
+                try node.rect_node.setId("selector-square");
+                node.rect_node.space.size.x = 3;
+                node.selected = false;
+                return node;
+            }
+
+            pub fn deinit(this: *EntryNode) void {
+                this.gpa.destroy(this);
+            }
+
+            pub fn toNode(this: *EntryNode) !*ui.Node {
+                const node = try ui.Node.init(this.gpa, this, .zero, &entry_vtable);
+                try node.addChild(this.text_node);
+                try node.addChild(this.rect_node);
+                return node;
+            }
+
+            // this isnt how i would recommend doing this, but i cant think of a easier way right now
+            fn calculateSize(ptr: *anyopaque, _: *ui.Node) !rl.Vector2 {
+                const this: *EntryNode = @ptrCast(@alignCast(ptr));
+                try this.text_node.calculateSize();
+                this.rect_node.space.size.y = this.text_node.space.size.y;
+                return this.text_node.space.size.add(.init(12, 0));
+            }
+
+            pub fn deselect(this: *EntryNode) void {
+                this.selected = false;
+                this.text.tint = .white;
+                this.text_node.space.offset.x = 0;
+                this.rect.color = .blank;
+            }
+
+            pub fn select(this: *EntryNode) void {
+                this.selected = true;
+                this.text.tint = .light_gray;
+                this.text_node.space.offset.x = 12;
+                this.rect.color = .light_gray;
+            }
         };
 
-        pub fn init(gpa: std.mem.Allocator, text: [:0]const u8) !*EntryNode {
-            const node = try gpa.create(EntryNode);
+        pub fn init(gpa: std.mem.Allocator, manager: *Manager) !*This {
+            const node = try gpa.create(This);
             node.gpa = gpa;
-            node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
-            node.text_node = try node.text.toNode();
-            try node.text_node.setId("entry-text");
-            node.rect = try ui.RectNode.init(gpa, .blank);
-            node.rect_node = try node.rect.toNode();
-            try node.rect_node.setId("selector-square");
-            node.rect_node.space.size.x = 3;
-            node.selected = false;
+            node.accept_input = true;
+            node.active = @enumFromInt(fields[0].value);
+            node.manager = manager;
+            node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
+            node.layout_node = try node.layout.toNode();
+            node.layout_node.space.offset.x = 12;
+            for (0..fields.len) |i| {
+                node.entries[i] = try .init(gpa, node, fields[i].name);
+                node.entry_nodes[i] = try node.entries[i].toNode();
+                try node.entry_nodes[i].setId(fields[i].name);
+                try node.layout_node.addChild(node.entry_nodes[i]);
+            }
+            node.entries[0].select();
             return node;
         }
 
-        pub fn deinit(this: *EntryNode) void {
+        pub fn deinit(this: *This) void {
             this.gpa.destroy(this);
         }
 
-        pub fn toNode(this: *EntryNode) !*ui.Node {
-            const node = try ui.Node.init(this.gpa, this, .zero, &entry_vtable);
-            try node.addChild(this.text_node);
-            try node.addChild(this.rect_node);
+        pub fn updateNodes(this: *This) void {
+            inline for (0..fields.len) |i| {
+                this.entries[i].deselect();
+                if (@intFromEnum(this.active) == fields[i].value) this.entries[i].select();
+            }
+        }
+
+        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
+            const this: *This = @ptrCast(@alignCast(ptr));
+            if (!this.accept_input) return .dont_propagate;
+            switch (key) {
+                .j => {
+                    inline for (fields, 0..) |field, i| {
+                        if (field.value == @intFromEnum(this.active)) {
+                            if (i == fields.len - 1) {
+                                this.active = @enumFromInt(fields[0].value);
+                            } else {
+                                this.active = @enumFromInt(fields[i + 1].value);
+                            }
+                            break;
+                        }
+                    }
+                },
+                .k => {
+                    inline for (fields, 0..) |field, i| {
+                        if (field.value == @intFromEnum(this.active)) {
+                            if (i == 0) {
+                                this.active = @enumFromInt(fields[fields.len - 1].value);
+                            } else {
+                                this.active = @enumFromInt(fields[i - 1].value);
+                            }
+                            break;
+                        }
+                    }
+                },
+                .space => {
+                    func(this.manager, this.active);
+                },
+                else => return .propagate,
+            }
+            this.updateNodes();
+            return .dont_propagate;
+        }
+
+        const vtable: ui.Node.VTable = .{
+            .deinit = ui.Node.VTable.basicOpaqueDeinit(This),
+            .on_input = onInput,
+            .type_info = ui.Node.VTable.basicTypeInfo(This, &.{}),
+        };
+        pub fn toNode(this: *This) !*ui.Node {
+            const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
+            try node.addChild(this.layout_node);
             return node;
         }
-
-        // this isnt how i would recommend doing this, but i cant think of a easier way right now
-        fn calculateSize(ptr: *anyopaque, _: *ui.Node) !rl.Vector2 {
-            const this: *EntryNode = @ptrCast(@alignCast(ptr));
-            try this.text_node.calculateSize();
-            this.rect_node.space.size.y = this.text_node.space.size.y;
-            return this.text_node.space.size.add(.init(12, 0));
-        }
-
-        pub fn deselect(this: *EntryNode) void {
-            this.selected = false;
-            this.text.tint = .white;
-            this.text_node.space.offset.x = 0;
-            this.rect.color = .blank;
-        }
-
-        pub fn select(this: *EntryNode) void {
-            this.selected = true;
-            this.text.tint = .light_gray;
-            this.text_node.space.offset.x = 12;
-            this.rect.color = .light_gray;
-        }
     };
+}
 
-    pub fn init(gpa: std.mem.Allocator, quit_ptr: *bool, restart_ptr: *bool) !*MenuManager {
+pub const MenuManager = struct {
+    const MainMenu = Menu(MenuManager, MainOptions, submitMainMenu);
+    pub const MainOptions = enum {
+        Resume,
+        Restart,
+        Mode,
+        Exit,
+    };
+    const ModeMenu = Menu(MenuManager, ModeOptions, submitModeMenu);
+    pub const ModeOptions = enum {
+        Default,
+        @"Flags Only",
+        Back,
+    };
+    fn NodePair(comptime Manager: type) type {
+        if (!@hasDecl(Manager, "toNode")) @compileError("Manager must have a toNode method");
+        return struct {
+            manager: *Manager,
+            node: *ui.Node,
+
+            pub fn init(manager: *Manager) !@This() {
+                return .{
+                    .manager = manager,
+                    .node = try manager.toNode(),
+                };
+            }
+        };
+    }
+
+    gpa: std.mem.Allocator,
+    layout: *ui.LayoutNode,
+    layout_node: *ui.Node,
+    main_menu: ?NodePair(MainMenu),
+    mode_menu: ?NodePair(ModeMenu),
+    exit_ptr: *bool,
+    restart_ptr: *bool,
+    target_mode_ptr: *Board.Mode,
+
+    pub fn init(gpa: std.mem.Allocator, exit_ptr: *bool, restart_ptr: *bool, target_mode_ptr: *Board.Mode) !*MenuManager {
         const node = try gpa.create(MenuManager);
-        node.entry = .res;
         node.gpa = gpa;
-        node.in_menu = false;
-        node.quit_flag = quit_ptr;
-        node.restart_flag = restart_ptr;
-        node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
+        node.layout = try ui.LayoutNode.init(gpa, 12, .horizontal, .start);
         node.layout_node = try node.layout.toNode();
-        node.res = try EntryNode.init(gpa, "Resume");
-        node.res.select();
-        node.res_node = try node.res.toNode();
-        try node.res_node.setId("resume");
-        node.res_node.space.offset.x = 12;
-        try node.layout_node.addChild(node.res_node);
-
-        node.restart = try EntryNode.init(gpa, "Restart");
-        node.restart_node = try node.restart.toNode();
-        try node.restart_node.setId("restart");
-        node.restart_node.space.offset.x = 12;
-        try node.layout_node.addChild(node.restart_node);
-
-        node.exit = try EntryNode.init(gpa, "Exit");
-        node.exit_node = try node.exit.toNode();
-        try node.exit_node.setId("exit");
-        node.exit_node.space.offset.x = 12;
-        try node.layout_node.addChild(node.exit_node);
-
-        node.updateNodes();
+        node.main_menu = null;
+        node.mode_menu = null;
+        node.exit_ptr = exit_ptr;
+        node.restart_ptr = restart_ptr;
+        node.target_mode_ptr = target_mode_ptr;
         return node;
     }
 
@@ -686,54 +784,94 @@ pub const MenuManager = struct {
         this.gpa.destroy(this);
     }
 
+    pub fn open(this: *MenuManager) !void {
+        if (this.main_menu != null) return;
+        this.main_menu = try .init(try MainMenu.init(this.gpa, this));
+        try this.layout_node.addChild(this.main_menu.?.node);
+        try this.layout_node.recalculateNodeGraphSize();
+    }
+
+    pub fn openMode(this: *MenuManager) !void {
+        if (this.mode_menu != null) return;
+        if (this.main_menu == null) @panic("main menu null when mode menu is opening");
+        this.mode_menu = try .init(try ModeMenu.init(this.gpa, this));
+        try this.layout_node.addChild(this.mode_menu.?.node);
+        try this.layout_node.recalculateNodeGraphSize();
+        this.main_menu.?.manager.accept_input = false;
+    }
+
+    pub fn close(this: *MenuManager) !void {
+        if (this.main_menu) |m| {
+            if (m.node.parent) |p| {
+                try m.node.setId("llllldwijaiwa");
+                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+            } else {
+                m.node.deinit();
+            }
+            this.main_menu = null;
+        }
+        if (this.mode_menu) |m| {
+            if (m.node.parent) |p| {
+                try m.node.setId("llllldwijaiwa");
+                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+            } else {
+                m.node.deinit();
+            }
+            this.mode_menu = null;
+        }
+        try this.layout_node.recalculateNodeGraphSize();
+    }
+
+    pub fn closeMode(this: *MenuManager) !void {
+        if (this.mode_menu) |m| {
+            if (m.node.parent) |p| {
+                try m.node.setId("llllldwijaiwa");
+                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+            } else {
+                m.node.deinit();
+            }
+            this.mode_menu = null;
+        }
+        if (this.main_menu) |m| m.manager.accept_input = true;
+        try this.layout_node.recalculateNodeGraphSize();
+    }
+
+    fn submitMainMenu(this: *MenuManager, active: MainOptions) void {
+        switch (active) {
+            .Resume => this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err }),
+            .Restart => {
+                this.restart_ptr.* = true;
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failute {any}", .{ err });
+            },
+            .Mode => this.openMode() catch |err| std.debug.panicExtra(null, "mode open failure {any}", .{ err}),
+            .Exit => {
+                this.exit_ptr.* = true;
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+            },
+        }
+    }
+    fn submitModeMenu(this: *MenuManager, active: ModeOptions) void {
+        switch (active) {
+            .Default => {
+                this.target_mode_ptr.* = .default;
+                this.restart_ptr.* = true;
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+            },
+            .@"Flags Only" => {
+                this.target_mode_ptr.* = .flag_only;
+                this.restart_ptr.* = true;
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+            },
+            .Back => {
+                this.closeMode() catch |err| std.debug.panicExtra(null, "mode close failure {any}", .{ err });
+            }
+        }
+    }
 
     const vtable: ui.Node.VTable = .{
         .deinit = ui.Node.VTable.basicOpaqueDeinit(MenuManager),
-        .on_input = onInput,
-        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager, &.{ "in_menu" })
+        .type_info = ui.Node.VTable.basicTypeInfo(MenuManager, &.{}),
     };
-
-    fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
-        const this: *MenuManager = @ptrCast(@alignCast(ptr));
-        switch (key) {
-            .j => this.entry = meta.nextEnumValueWrap(this.entry),
-            .k => this.entry = meta.prevEnumValueWrap(this.entry),
-            .space => {
-                switch (this.entry) {
-                    .res => {
-                        this.close();
-                    },
-                    .restart => {
-                        this.restart_flag.* = true;
-                        this.close();
-                    },
-                    .exit => {
-                        this.quit_flag.* = true;
-                    },
-                }
-            },
-            else => return .propagate,
-        }
-        this.updateNodes();
-        return .dont_propagate;
-    }
-
-    fn close(this: *MenuManager) void {
-        this.in_menu = false;
-        this.entry = @enumFromInt(0);
-    }
-
-    fn updateNodes(this: *MenuManager) void {
-        this.res.deselect();
-        this.restart.deselect();
-        this.exit.deselect();
-        switch (this.entry) {
-            .res => this.res.select(),
-            .restart => this.restart.select(),
-            .exit => this.exit.select(),
-        }
-    }
-
     pub fn toNode(this: *MenuManager) !*ui.Node {
         const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
         try node.addChild(this.layout_node);
@@ -775,7 +913,8 @@ pub fn main(init: std.process.Init) !void {
     };
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
-    const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart);
+    var target_mode: Board.Mode = .default;
+    const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart, &target_mode);
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
@@ -789,7 +928,7 @@ pub fn main(init: std.process.Init) !void {
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, 50, &camera);
+        var board = try Board.init(init.gpa, 50, &camera, target_mode);
         defer board.deinit();
         try board.setup(init.io);
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
@@ -798,12 +937,12 @@ pub fn main(init: std.process.Init) !void {
                 break;
             }
             if (rl.isKeyPressed(.escape)) {
-                menu.in_menu = !menu.in_menu;
+                try menu.open();
             }
             if (rl.isKeyPressed(.p)) {
                 inspector.is_open = !inspector.is_open;
             }
-            if (!menu.in_menu) {
+            if (menu.main_menu == null) {
                 try board.tick();
             } else {
                 while (iterateKeysPressed()) |key| {
@@ -817,7 +956,7 @@ pub fn main(init: std.process.Init) !void {
                 inspector.beginDraw();
                 defer inspector.endDraw();
                 rl.clearBackground(.black);
-                if (!menu.in_menu) {
+                if (menu.main_menu == null) {
                     try board.draw();
                 } else {
                     try root_node.draw();
