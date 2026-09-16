@@ -117,6 +117,7 @@ const GridSpace = union(GridSpace.Type) {
     pub fn toggleFlag(this: *GridSpace) void {
         switch (this.*) {
             inline else => |*v| {
+                if (!v.hidden) return;
                 v.flagged = !v.flagged;
             },
         }

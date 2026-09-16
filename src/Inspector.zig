@@ -260,6 +260,38 @@ pub const Entry = struct {
         };
     }
 
+    pub fn reloadChildren(this: *Entry, gpa: std.mem.Allocator) !void {
+        var reload: bool = this.children.len != this.node.children.items.len;
+        if (!reload) {
+            for (this.children, 0..) |child, i| {
+                if (child.node != this.node.children.items[i]) {
+                    reload = true;
+                    break;
+                }
+            }
+        }
+        if (reload) {
+            if (this.inspector.selected_entry == this) this.inspector.selected_entry = null;
+            for (this.children) |*child| {
+                if (this.inspector.selected_entry == child) {
+                    this.inspector.selected_entry = null;
+                    std.log.debug("killing selected", .{});
+                }
+                child.deinit(gpa);
+            }
+            gpa.free(this.children);
+            this.children = try gpa.alloc(Entry, this.node.children.items.len);
+            for (0..this.children.len) |i| {
+                this.children[i] = try .init(gpa, this.node.children.items[i], this.inspector);
+            }
+        } else {
+            for (this.children) |*child| {
+                try child.reloadChildren(gpa);
+            }
+        }
+    }
+
+
     pub fn deinit(this: Entry, gpa: std.mem.Allocator) void {
         for (this.children) |child| {
             child.deinit(gpa);
@@ -277,6 +309,7 @@ pub const Entry = struct {
 };
 
 pub fn draw(this: *@This()) !void {
+    try this.reloadGraph(this.root_entry.node);
     rl.clearBackground(rl.getColor(@bitCast(rgui.getStyle(.default, .background_color))));
     if (this.is_open) {
         const source: rl.Rectangle = .init(0, 0, this.width, -this.height);
@@ -310,4 +343,26 @@ pub fn draw(this: *@This()) !void {
     } else {
         this.texture.texture.drawRec(.init(0, 0, this.width, -this.height), .zero(), .white);
     }
+}
+
+pub fn reloadGraph(this: *Inspector, root: *ui.Node) !void {
+    const selected_ptr: ?*ui.Node = if (this.selected_entry) |e| e.node else null;
+    if (this.root_entry.node != root) {
+        this.root_entry.deinit(this.gpa);
+        try this.setRoot(root);
+        this.selected_entry = null;
+    } else {
+        try this.root_entry.reloadChildren(this.gpa);
+    }
+    if (selected_ptr) |ptr| {
+        this.selected_entry = this.checkChildPtrs(&this.root_entry, ptr);
+    }
+}
+
+pub fn checkChildPtrs(this: *Inspector, entry: *Entry, node: *ui.Node) ?*Entry {
+    if (entry.node == node) return entry;
+    for (entry.children) |*child| {
+        if (this.checkChildPtrs(child, node)) |res| return res;
+    }
+    return null;
 }
