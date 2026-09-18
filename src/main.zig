@@ -265,12 +265,8 @@ const Board = struct {
         this.arena.deinit();
     }
 
-    pub fn tick(this: *Board) !void {
-        //        const dt = rl.getFrameTime();
-        //        const mouse_pos_screen = rl.getMousePosition();
-
-        //        const mouse_pos = rl.getScreenToWorld2D(mouse_pos_screen, this.camera.camera);
-
+    const min_camera_zoom = 1.8719;
+    pub fn tick(this: *Board, dt: f32) !void {
         if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
             this.cursor_pos.x -= 1;
             this.camera.animateShift(-20, 0, 0.2);
@@ -288,13 +284,13 @@ const Board = struct {
             this.camera.animateShift(0, 20, 0.2);
         }
         if (rl.isKeyDown(.e)) {
-            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom * 1.1, 1.8719, 100);
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom + (this.camera.camera.zoom * 3 * dt), min_camera_zoom, 100);
         }
         if (rl.isKeyDown(.q)) {
-            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom * 0.9, 1.8719, 100);
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom - (this.camera.camera.zoom * 3 * dt), min_camera_zoom, 100);
         }
         if (rl.isKeyPressed(.r)) {
-            this.camera.camera.zoom = 1.8719;
+            this.camera.camera.zoom = min_camera_zoom;
         }
 
         if (rl.isKeyPressed(.space)) blk: {
@@ -695,6 +691,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
                             break;
                         }
                     }
+                    this.updateNodes();
                 },
                 .k => {
                     inline for (fields, 0..) |field, i| {
@@ -707,13 +704,14 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
                             break;
                         }
                     }
+
+                    this.updateNodes();
                 },
                 .space => {
                     func(this.manager, this.active);
                 },
                 else => return .propagate,
             }
-            this.updateNodes();
             return .dont_propagate;
         }
 
@@ -839,15 +837,15 @@ pub const MenuManager = struct {
 
     fn submitMainMenu(this: *MenuManager, active: MainOptions) void {
         switch (active) {
-            .Resume => this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err }),
+            .Resume => this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err}),
             .Restart => {
                 this.restart_ptr.* = true;
-                this.close() catch |err| std.debug.panicExtra(null, "menu close failute {any}", .{ err });
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failute {any}", .{err});
             },
-            .Mode => this.openMode() catch |err| std.debug.panicExtra(null, "mode open failure {any}", .{ err}),
+            .Mode => this.openMode() catch |err| std.debug.panicExtra(null, "mode open failure {any}", .{err}),
             .Exit => {
                 this.exit_ptr.* = true;
-                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err});
             },
         }
     }
@@ -856,16 +854,16 @@ pub const MenuManager = struct {
             .Default => {
                 this.target_mode_ptr.* = .default;
                 this.restart_ptr.* = true;
-                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err});
             },
             .@"Flags Only" => {
                 this.target_mode_ptr.* = .flag_only;
                 this.restart_ptr.* = true;
-                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{ err });
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err});
             },
             .Back => {
-                this.closeMode() catch |err| std.debug.panicExtra(null, "mode close failure {any}", .{ err });
-            }
+                this.closeMode() catch |err| std.debug.panicExtra(null, "mode close failure {any}", .{err});
+            },
         }
     }
 
@@ -892,7 +890,7 @@ pub fn main(init: std.process.Init) !void {
 
     rl.initWindow(screen_width, screen_height, "Minesweeeeeper");
     defer rl.closeWindow();
-    rl.setTargetFPS(60);
+    rl.setTargetFPS(1000000);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
@@ -929,10 +927,11 @@ pub fn main(init: std.process.Init) !void {
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, 50, &camera, target_mode);
+        var board = try Board.init(init.gpa, 75, &camera, target_mode);
         defer board.deinit();
         try board.setup(init.io);
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+            const dt = rl.getFrameTime();
             if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
                 should_exit = true;
                 break;
@@ -944,10 +943,12 @@ pub fn main(init: std.process.Init) !void {
                 inspector.is_open = !inspector.is_open;
             }
             if (menu.main_menu == null) {
-                try board.tick();
+                try board.tick(dt);
             } else {
                 while (iterateKeysPressed()) |key| {
-                    try root_node.onInput(key);
+                    if (menu.main_menu != null) {
+                        try root_node.onInput(key);
+                    }
                 }
                 try root_node.tick(rl.getFrameTime());
             }
