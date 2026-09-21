@@ -954,6 +954,8 @@ pub const TextureNode = struct {
     }
 };
 
+/// A basic text input.
+/// Must be placed at the top of a node's children to properly consume inputs.
 pub const TextInputNode = struct {
     gpa: std.mem.Allocator,
     text: [:0]u8,
@@ -963,6 +965,10 @@ pub const TextInputNode = struct {
     allowed_chars: ?[:0]const u8,
     max_len: usize,
 
+    /// `suggestion` - text to display when no input has been given.
+    /// `allowed_chars` - a string of all allowed characters. Allows all ascii characters when null.
+    /// `buf_size` - the initial allocated size of the input buffer.
+    /// `max_len` - the maximum size of the input buffer.
     pub fn init(gpa: std.mem.Allocator, suggestion: ?[:0]const u8, allowed_chars: ?[:0]const u8, buf_size: usize, max_len: usize) !*TextInputNode {
         const node = try gpa.create(TextInputNode);
         node.gpa = gpa;
