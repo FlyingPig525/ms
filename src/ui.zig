@@ -414,6 +414,7 @@ pub const Node = struct {
                         const FieldType = if (info == .optional) info.optional.child else @FieldType(T, field);
                         props[i + props.len - fields.len] = switch (FieldType) {
                             i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            usize => .{ .usize = .{ .name = names[i], .ptr = &@field(this, field) } },
                             f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
                             bool => .{ .boolean = .{ .name = names[i], .ptr = &@field(this, field) } },
                             [:0]const u8, [:0]u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
@@ -455,6 +456,7 @@ pub const Node = struct {
         }
         pub const Property = union(enum) {
             int: Info(*i32),
+            usize: Info(*usize),
             float: Info(*f32),
             boolean: Info(*bool),
             string: Info([:0]const u8),
@@ -854,7 +856,7 @@ pub const ImageNode = struct {
         .deinit = Node.VTable.basicOpaqueDeinit(ImageNode),
         .draw = draw,
         .calculate_size = calculateSize,
-        .type_info = Node.VTable.basicTypeInfo(ImageNode, &.{"loaded"}),
+        .type_info = Node.VTable.basicTypeInfo(ImageNode, &.{ "loaded", "target_size" }),
     };
     pub fn toNode(this: *ImageNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
@@ -987,7 +989,7 @@ pub const TextInputNode = struct {
 
     const vtable: Node.VTable = .{
         .deinit = Node.VTable.basicOpaqueDeinit(TextInputNode),
-        .type_info = Node.VTable.basicTypeInfo(TextInputNode, &.{ "text", "suggestion", "focused", "allowed_chars" }),
+        .type_info = Node.VTable.basicTypeInfo(TextInputNode, &.{ "text", "suggestion", "focused", "allowed_chars", "cursor", "max_len" }),
         .on_click = onClick,
         .on_input = onInput,
         .draw = draw,
@@ -1063,7 +1065,7 @@ pub const TextInputNode = struct {
                 if (this.cursor > 0) this.cursor -= 1;
             },
             .right => blk: {
-                if (this.cursor < this.text.len - 1) {
+                if (this.cursor < this.text.len) {
                     if (this.text[this.cursor] == 0 and this.text[this.cursor + 1] == 0) break :blk;
                     this.cursor += 1;
                 }
@@ -1074,19 +1076,38 @@ pub const TextInputNode = struct {
                 if (code == 0 or !(code >= 32 and code <= 125)) break :blk;
                 const char: u8 = @intCast(code);
                 if (this.allowed_chars == null or std.mem.findScalar(u8, this.allowed_chars.?, char) != null) {
-                    this.text[this.cursor] = char;
-                    this.cursor += 1;
-                    if (this.cursor >= this.text.len) {
-                        var new: [:0]u8 = undefined;
-                        if (this.text.len + 10 > this.max_len) {
-                            new = try this.gpa.allocSentinel(u8, this.max_len, 0);
-                        } else {
-                            new = try this.gpa.allocSentinel(u8, this.text.len + 10, 0);
+                    if (this.text[this.cursor] == 0) {
+                        this.text[this.cursor] = char;
+                        this.cursor += 1;
+                        if (this.cursor >= this.text.len and this.text.len < this.max_len) {
+                            var new: [:0]u8 = undefined;
+                            if (this.text.len + 10 > this.max_len) {
+                                new = try this.gpa.allocSentinel(u8, this.max_len, 0);
+                            } else {
+                                new = try this.gpa.allocSentinel(u8, this.text.len + 10, 0);
+                            }
+                            @memcpy(new[0..this.text.len], this.text);
+                            @memset(new[this.text.len..], 0);
+                            this.gpa.free(this.text);
+                            this.text = new;
                         }
-                        @memcpy(new[0..this.text.len], this.text);
-                        @memset(new[this.text.len..], 0);
-                        this.gpa.free(this.text);
-                        this.text = new;
+                    } else {
+                        if (this.text[this.text.len - 1] != 0) {
+                            if (this.text.len == this.max_len) break :blk;
+                            var new: [:0]u8 = undefined;
+                            if (this.text.len + 10 > this.max_len) {
+                                new = try this.gpa.allocSentinel(u8, this.max_len, 0);
+                            } else {
+                                new = try this.gpa.allocSentinel(u8, this.text.len + 10, 0);
+                            }
+                            @memcpy(new[0..this.text.len], this.text);
+                            @memset(new[this.text.len..], 0);
+                            this.gpa.free(this.text);
+                            this.text = new;
+                        }
+                        @memmove(this.text[this.cursor + 1..], this.text[this.cursor..this.text.len - 1]);
+                        this.text[this.cursor] = char;
+                        this.cursor += 1;
                     }
                 }
             },

@@ -194,7 +194,15 @@ pub const Entry = struct {
                         _ = rgui.checkBox(.init(5, 5 + offset.y + i * 35, 30, 30), b.name, b.ptr.?);
                     },
                     .int => |int| {
-                        _ = rgui.valueBox(.init(5, 5 + offset.y + i * 35, 100, 30), int.name, int.ptr.?, std.math.minInt(i32), std.math.maxInt(i32), state[idx].int.editing);
+                        if (rgui.valueBox(.init(5, 5 + offset.y + i * 35, 100, 30), int.name, int.ptr.?, std.math.minInt(i32), std.math.maxInt(i32), state[idx].int.editing) > 0) {
+                            state[idx].int.editing = !state[idx].int.editing;
+                        }
+                    },
+                    .usize => |u| {
+                        const width = rgui.getTextWidth(u.name);
+                        if (rgui.valueBox(.init(@floatFromInt(5 + width), 5 + offset.y + i * 35, 100, 30), u.name, @ptrCast(u.ptr.?), 0, std.math.maxInt(i32), state[idx].int.editing) > 0) {
+                            state[idx].int.editing = !state[idx].int.editing;
+                        }
                     },
                     .float => |f| {
                         try state[idx].float.draw(offset.add(.init(5, 5 + i * 35)), f.ptr.?, f.name);
@@ -255,7 +263,7 @@ pub const Entry = struct {
                     .float => {
                         state.?[i] = try InfoState.floatState(gpa);
                     },
-                    .int => {
+                    .int, .usize => {
                         state.?[i] = .{ .int = .{} };
                     },
                     .vector => {
