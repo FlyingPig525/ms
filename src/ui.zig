@@ -410,7 +410,9 @@ pub const Node = struct {
                     props[1] = .{ .vector = .{ .name = offset_name, .ptr = &node.space.offset } };
                     props[2] = .{ .vector = .{ .name = size_name, .ptr = &node.space.size } };
                     inline for (fields, 0..) |field, i| {
-                        props[i + props.len - fields.len] = switch (@FieldType(T, field)) {
+                        const info = @typeInfo(@FieldType(T, field));
+                        const FieldType = if (info == .optional) info.optional.child else @FieldType(T, field);
+                        props[i + props.len - fields.len] = switch (FieldType) {
                             i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
                             usize => .{ .usize = .{ .name = names[i], .ptr = &@field(this, field) } },
                             f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
@@ -446,19 +448,19 @@ pub const Node = struct {
                 gpa.free(p);
             }
         }
-        fn Named(comptime PtrT: type) type {
+        fn Info(comptime PtrT: type) type {
             return struct {
                 name: [:0]const u8,
-                ptr: PtrT,
+                ptr: ?PtrT,
             };
         }
         pub const Property = union(enum) {
-            int: Named(*i32),
-            float: Named(*f32),
-            boolean: Named(*bool),
-            string: Named([:0]const u8),
-            vector: Named(*rl.Vector2),
-            color: Named(*rl.Color),
+            int: Info(*i32),
+            float: Info(*f32),
+            boolean: Info(*bool),
+            string: Info([:0]const u8),
+            vector: Info(*rl.Vector2),
+            color: Info(*rl.Color),
         };
     };
 
@@ -986,7 +988,7 @@ pub const TextInputNode = struct {
 
     const vtable: Node.VTable = .{
         .deinit = Node.VTable.basicOpaqueDeinit(TextInputNode),
-        .type_info = Node.VTable.basicTypeInfo(TextInputNode, &.{ "text", "suggestion", "focused" }),
+        .type_info = Node.VTable.basicTypeInfo(TextInputNode, &.{ "text", "suggestion", "focused", "allowed_chars" }),
         .on_click = onClick,
         .on_input = onInput,
         .draw = draw,
