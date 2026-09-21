@@ -676,7 +676,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             }
         }
 
-        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey) !ui.Node.Propagation {
+        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Node.Propagation {
             const this: *This = @ptrCast(@alignCast(ptr));
             if (!this.accept_input) return .dont_propagate;
             switch (key) {
@@ -890,7 +890,7 @@ pub fn main(init: std.process.Init) !void {
 
     rl.initWindow(screen_width, screen_height, "Minesweeeeeper");
     defer rl.closeWindow();
-    rl.setTargetFPS(1000000);
+    rl.setTargetFPS(60);
 
     var camera: Camera = .init(.{
         .target = .{ .x = 10, .y = 10 },
@@ -913,11 +913,18 @@ pub fn main(init: std.process.Init) !void {
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
     var target_mode: Board.Mode = .default;
+    const input = try ui.TextInputNode.init(init.gpa, "suggestion", null, 12, 50);
+    const input_node = try input.toNode();
+    input_node.space.size = .{ .x = 300, .y = 30 };
+    try root_node.addChildAt(input_node, .init(500, 0));
     const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart, &target_mode);
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
     try inspector.setRoot(root_node);
+
+    var keys_pressed: std.ArrayList(rl.KeyboardKey) = .empty;
+    defer keys_pressed.deinit(init.gpa);
 
     //    var menu_data = ui.Menu.init(&.{
     //        try .init(init.gpa, "Resume", resumeFromMenu),
@@ -946,9 +953,24 @@ pub fn main(init: std.process.Init) !void {
                 try board.tick(dt);
             } else {
                 while (iterateKeysPressed()) |key| {
+                    try keys_pressed.append(init.gpa, key);
                     if (menu.main_menu != null) {
-                        try root_node.onInput(key);
+                        _ = try root_node.onInput(key, false);
                     }
+                }
+                for (keys_pressed.items, 0..) |key, i| {
+                    if (rl.isKeyUp(key)) {
+                        _ = keys_pressed.swapRemove(i);
+                        continue;
+                    }
+                    if (rl.isKeyPressedRepeat(key)) {
+                        if (menu.main_menu != null) {
+                            _ = try root_node.onInput(key, true);
+                        }
+                    }
+                }
+                if (rl.isMouseButtonPressed(.left)) {
+                    _ = try root_node.onClick(.left, rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
                 }
                 try root_node.tick(rl.getFrameTime());
             }
