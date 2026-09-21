@@ -216,7 +216,15 @@ pub const Entry = struct {
                         try v_state.x.draw(offset.add(.init(5 + width, 5 + i * 35)), &v.ptr.?.x, "x");
                         try v_state.y.draw(offset.add(.init(105 + width + x_w * 2, 5 + i * 35)), &v.ptr.?.y, "y");
                     },
-                    else => {},
+                    .color => |c| {
+                        const width: f32 = @floatFromInt(rgui.getTextWidth(c.name) + rgui.getTextWidth(": ") + rgui.getStyle(.button, .text_padding) * 2);
+                        const concat = try std.mem.concatWithSentinel(this.gpa, u8, &.{ c.name, ": " }, 0);
+                        defer this.gpa.free(concat);
+                        _ = rgui.label(.init(5, 5 + offset.y + i * 35, width, 30), concat);
+                        rl.drawRectangleRec(.init(width + 5, 5 + offset.y + i * 35, 30, 30), c.ptr.?.*);
+                        const color = rgui.getStyle(.checkbox, .border_color_normal);
+                        rl.drawRectangleLinesEx(.init(width + 5, 5 + offset.y + i * 35, 30, 30), 1, rl.Color.fromInt(@bitCast(color)));
+                    },
                 }
             }
         }

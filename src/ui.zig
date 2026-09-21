@@ -414,7 +414,6 @@ pub const Node = struct {
                         const FieldType = if (info == .optional) info.optional.child else @FieldType(T, field);
                         props[i + props.len - fields.len] = switch (FieldType) {
                             i32 => .{ .int = .{ .name = names[i], .ptr = &@field(this, field) } },
-                            usize => .{ .usize = .{ .name = names[i], .ptr = &@field(this, field) } },
                             f32 => .{ .float = .{ .name = names[i], .ptr = &@field(this, field) } },
                             bool => .{ .boolean = .{ .name = names[i], .ptr = &@field(this, field) } },
                             [:0]const u8, [:0]u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
