@@ -399,26 +399,37 @@ const Board = struct {
         {
             rl.beginMode2D(this.camera.camera);
             defer rl.endMode2D();
-
-            const camera_chunk = this.cursor_pos.floorDivValue(chunk_size);
-            const center_x: i32 = camera_chunk.x;
-            const center_y: i32 = camera_chunk.y;
-            var chunk_x = center_x - 1;
-            while (chunk_x <= center_x + 1) : (chunk_x += 1) {
-                var chunk_y = center_y - 1;
-                while (chunk_y <= center_y + 1) : (chunk_y += 1) {
-                    const chunk_n = this.scene.get(.{ .x = chunk_x, .y = chunk_y });
-                    if (chunk_n) |chunk| {
-                        for (0..chunk_size) |x| {
-                            for (0..chunk_size) |y| {
-                                const cell = chunk.get(@intCast(x), @intCast(y)) catch unreachable;
-                                const diffed_cursor = this.cursor_pos.sub(.{ .x = chunk_x * chunk_size, .y = chunk_y * chunk_size });
-                                cell.draw(.{ .x = @as(i32, @intCast(x)) + (chunk_x * chunk_size), .y = @as(i32, @intCast(y)) + (chunk_y * chunk_size), .width = 20, .height = 20, .hovering = diffed_cursor.lEql(@intCast(x), @intCast(y)) });
-                            }
-                        }
-                    }
+            const tl_pos = rl.getScreenToWorld2D(.init(0, 0), this.camera.camera);
+            const tl_vec = IVec2{ .x = @floor(tl_pos.x / 20), .y = @floor(tl_pos.y / 20) };
+            const br_pos = rl.getScreenToWorld2D(.init(@floatFromInt(rl.getScreenWidth()), @floatFromInt(rl.getScreenHeight())), this.camera.camera);
+            const br_vec = IVec2{ .x = @floor(br_pos.x / 20), .y = @floor(br_pos.y / 20) };
+            var x = tl_vec.x;
+            while (x <= br_vec.x) : (x += 1) {
+                var y = tl_vec.y;
+                while (y <= br_vec.y) : (y += 1) {
+                    const cell = this.get(x, y) orelse continue;
+                    cell.draw(.{ .x = x, .y = y, .width = 20, .height = 20, .hovering = this.cursor_pos.lEql(x, y) });
                 }
             }
+            //const camera_chunk = this.cursor_pos.floorDivValue(chunk_size);
+            //const center_x: i32 = camera_chunk.x;
+            //const center_y: i32 = camera_chunk.y;
+            //var chunk_x = center_x - 1;
+            //while (chunk_x <= center_x + 1) : (chunk_x += 1) {
+            //var chunk_y = center_y - 1;
+            //while (chunk_y <= center_y + 1) : (chunk_y += 1) {
+            //const chunk_n = this.scene.get(.{ .x = chunk_x, .y = chunk_y });
+            //if (chunk_n) |chunk| {
+            //for (0..chunk_size) |x| {
+            //for (0..chunk_size) |y| {
+            //const cell = chunk.get(@intCast(x), @intCast(y)) catch unreachable;
+            //const diffed_cursor = this.cursor_pos.sub(.{ .x = chunk_x * chunk_size, .y = chunk_y * chunk_size });
+            //cell.draw(.{ .x = @as(i32, @intCast(x)) + (chunk_x * chunk_size), .y = @as(i32, @intCast(y)) + (chunk_y * chunk_size), .width = 20, .height = 20, .hovering = diffed_cursor.lEql(@intCast(x), @intCast(y)) });
+            //}
+            //}
+            //}
+            //}
+            //}
         }
         var buf: [20]u8 = undefined;
         const txt = try std.fmt.bufPrintZ(&buf, "Cursor: {d} {d}", .{ this.cursor_pos.x, this.cursor_pos.y });
