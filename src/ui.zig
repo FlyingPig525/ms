@@ -886,7 +886,7 @@ pub const ImageNode = struct {
             this.loaded = false;
             this.texture.unload();
         }
-        this.image.resize(@intFromFloat(size.x), @intFromFloat(size.y));
+        this.image.resize(@floor(size.x), @floor(size.y));
         this.texture = try rl.Texture.fromImage(this.image);
         this.loaded = true;
     }
@@ -910,7 +910,7 @@ pub const ImageNode = struct {
         const this: *ImageNode = @ptrCast(@alignCast(ptr));
         if (!this.loaded) {
             if (this.target_size) |size| {
-                this.image.resize(@intFromFloat(size.x), @intFromFloat(size.y));
+                this.image.resize(@floor(size.x), @floor(size.y));
             }
             this.texture = try .fromImage(this.image);
             this.loaded = true;

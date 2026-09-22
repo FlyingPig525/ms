@@ -27,7 +27,7 @@ pub fn init(gpa: std.mem.Allocator, width: f32, height: f32) !@This() {
         .gpa = gpa,
         .width = width,
         .height = height,
-        .texture = try .init(@intFromFloat(width), @intFromFloat(height)),
+        .texture = try .init(@floor(width), @floor(height)),
         .root_entry = undefined,
         .prop_list_view = .init(0, height * 2 / 3, width / 2, height / 3),
         .func_list_view = .init(width / 2, height * 2 / 3, width / 2, height / 3),
@@ -348,11 +348,11 @@ pub fn draw(this: *@This()) !void {
     if (this.is_open) {
         const source: rl.Rectangle = .init(0, 0, this.width, -this.height);
         const dest: rl.Rectangle = .init(this.width / 3, 0, this.width * 2 / 3, this.height * 2 / 3);
-        this.beginDraw();
         if (this.selected_entry) |s| {
+            this.beginDraw();
+            defer this.endDraw();
             s.drawBounds();
         }
-        this.endDraw();
         this.texture.texture.drawPro(source, dest, .zero(), 0, .white);
         const bar_size: f32 = @floatFromInt(rgui.getStyle(.scrollbar, .scroll_slider_size));
         _ = rgui.scrollPanel(.init(0, 0, this.width / 3, this.height * 2 / 3), null, .init(0, 0, this.width, this.height), &this.node_list_scroll, &this.node_list_view);
