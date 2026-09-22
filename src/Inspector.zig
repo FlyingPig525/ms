@@ -331,7 +331,16 @@ pub const Entry = struct {
         this.info.deinit(this.gpa);
         this.gpa.free(this.children);
     }
+
+    pub fn drawBounds(this: Entry) void {
+        this.node.drawRectLines(.init(0, 0, 1, 1), 1, .yellow);
+    }
 };
+
+pub fn translate(this: *@This(), vec: rl.Vector2) rl.Vector2 {
+    if (!this.is_open) return vec;
+    return vec.subtract(.init(this.width / 3, 0)).multiply(.init(1.5, 1.5));
+}
 
 pub fn draw(this: *@This()) !void {
     try this.reloadGraph(this.root_entry.node);
@@ -339,6 +348,11 @@ pub fn draw(this: *@This()) !void {
     if (this.is_open) {
         const source: rl.Rectangle = .init(0, 0, this.width, -this.height);
         const dest: rl.Rectangle = .init(this.width / 3, 0, this.width * 2 / 3, this.height * 2 / 3);
+        this.beginDraw();
+        if (this.selected_entry) |s| {
+            s.drawBounds();
+        }
+        this.endDraw();
         this.texture.texture.drawPro(source, dest, .zero(), 0, .white);
         const bar_size: f32 = @floatFromInt(rgui.getStyle(.scrollbar, .scroll_slider_size));
         _ = rgui.scrollPanel(.init(0, 0, this.width / 3, this.height * 2 / 3), null, .init(0, 0, this.width, this.height), &this.node_list_scroll, &this.node_list_view);
