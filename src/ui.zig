@@ -1,6 +1,18 @@
 const std = @import("std");
 const rl = @import("raylib");
 
+// i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
+// i guess a u1 is basically the same, though.
+//
+// i dont really know why i chose to make this an enum instead of just making the functions return a bool to indicate
+// propagation, but oh well..
+// with the addition of consume, i now know.
+
+/// Whether to propagate the event to children.
+///
+/// `consume` will stop the event from being fired in any other nodes, not just children.
+pub const Propagation = enum { propagate, dont_propagate, consume };
+
 /// The building block of all UI.
 ///
 /// All `Node`s derive themselves from a "manager," a struct that manages
@@ -347,21 +359,9 @@ pub const Node = struct {
         try this.recalculateNodeGraphSize();
     }
 
-    // i was in the bathroom thinking about how zig should allow you to back an enum with a bool.
-    // i guess a u1 is basically the same, though.
-    //
-    // i dont really know why i chose to make this an enum instead of just making the functions return a bool to indicate
-    // propagation, but oh well..
-    // with the addition of consume, i now know.
-
-    /// Whether to propagate the event to children.
-    ///
-    /// `consume` will stop the event from being fired in any other nodes, not just children.
-    pub const Propagation = enum { propagate, dont_propagate, consume };
-
     pub const VTable = struct {
         /// Fires whenever a mouse button is pressed and the cursor intersects with the node's space.
-        /// `relative_pos` -- the position of the mouse cursor, minus the node's absolute offset. Null if
+        /// `relative_pos` - the position of the mouse cursor, minus the node's absolute offset. Null if
         /// this node was not clicked.
         ///
         /// Returns whether to propagate this event to children.
@@ -384,6 +384,10 @@ pub const Node = struct {
         ///
         /// If this member has a value, the function pointed to must call `calculateSize` on each of its children.
         calculate_size: ?(*const fn (this: *anyopaque, node: *Node) anyerror!rl.Vector2) = null,
+        /// Fires every frame, before tick.
+        /// `relative` - the position of the curosr, minus the node's absolute offset. Null if this node
+        /// was not clicked.
+        cursor_pos: ?(*const fn (node: *Node, pos: rl.Vector2, relative: ?rl.Vector2) anyerror!void) = null,
         /// Fires when the node is removed from its graph, causing it, and all of its children, to be deinitialized.
         /// Allows automatic cleanup of a custom node's resources.
         ///
@@ -529,6 +533,27 @@ pub const Node = struct {
         for (this.children.items) |child| {
             try child.tick(dt);
         }
+    }
+
+    pub fn cursorPos(this: *Node, pos: rl.Vector2, relative_pos: ?rl.Vector2) !void {
+        if (this.frozen) return;
+        if (this.vtable.cursor_pos) |c| {
+            try c(this, pos, relative_pos);
+        }
+        for (this.children.items) |child| {
+            const child_rect = rl.Rectangle{
+                .x = child.space.offset.x,
+                .y = child.space.offset.y,
+                .width = child.space.size.x,
+                .height = child.space.size.y,
+            };
+            if (relative_pos != null and rl.checkCollisionPointRec(relative_pos.?, child_rect)) {
+                try child.cursorPos(pos, relative_pos.?.subtract(child.space.offset));
+            } else {
+                try child.cursorPos(pos, null);
+            }
+        }
+        return;
     }
 };
 
@@ -1048,7 +1073,7 @@ pub const TextInputNode = struct {
         rl.endScissorMode();
     }
 
-    fn onClick(ptr: *anyopaque, _: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) !Node.Propagation {
+    fn onClick(ptr: *anyopaque, _: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) !Propagation {
         const this: *TextInputNode = @ptrCast(@alignCast(ptr));
         if (button != .left) return .propagate;
         if (relative_pos) |_| {
@@ -1060,7 +1085,7 @@ pub const TextInputNode = struct {
         return .dont_propagate;
     }
 
-    fn onInput(ptr: *anyopaque, _: *Node, key: rl.KeyboardKey, _: bool) !Node.Propagation {
+    fn onInput(ptr: *anyopaque, _: *Node, key: rl.KeyboardKey, _: bool) !Propagation {
         const this: *TextInputNode = @ptrCast(@alignCast(ptr));
         if (!this.focused) return .propagate;
         switch (key) {
@@ -1171,7 +1196,7 @@ pub const ToggleNode = struct {
         node.drawRectLines(.init(0, 0, 1, 1), 2, this.outline_color);
     }
 
-    fn onClick(_: *anyopaque, node: *Node, btn: rl.MouseButton, relative: ?rl.Vector2) !Node.Propagation {
+    fn onClick(_: *anyopaque, node: *Node, btn: rl.MouseButton, relative: ?rl.Vector2) !Propagation {
         const this = node.mgr(ToggleNode);
         if (relative == null or btn != .left) return .propagate;
         this.toggled.* = !this.toggled.*;

@@ -566,7 +566,6 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
         const This = @This();
 
         gpa: std.mem.Allocator,
-        accept_input: bool,
         active: Enum,
         manager: *Manager,
         layout: *ui.LayoutNode,
@@ -577,6 +576,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
         pub const EntryNode = struct {
             gpa: std.mem.Allocator,
             menu: *This,
+            entry: Enum,
             text: *ui.TextNode,
             text_node: *ui.Node,
             rect: *ui.RectNode,
@@ -587,11 +587,13 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
                 .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
                 .calculate_size = calculateSize,
                 .type_info = ui.Node.VTable.basicTypeInfo(EntryNode, &.{"selected"}),
+                .cursor_pos = cursorPos,
             };
 
-            pub fn init(gpa: std.mem.Allocator, menu: *This, text: [:0]const u8) !*EntryNode {
+            pub fn init(gpa: std.mem.Allocator, menu: *This, entry: Enum, text: [:0]const u8) !*EntryNode {
                 const node = try gpa.create(EntryNode);
                 node.gpa = gpa;
+                node.entry = entry;
                 node.menu = menu;
                 node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
                 node.text_node = try node.text.toNode();
@@ -623,6 +625,13 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
                 return this.text_node.space.size.add(.init(12, 0));
             }
 
+            fn cursorPos(node: *ui.Node, _: rl.Vector2, rel: ?rl.Vector2) !void {
+                const this = node.mgr(EntryNode);
+                if (rel) |_| {
+                    this.menu.hover(this);
+                }
+            }
+
             pub fn deselect(this: *EntryNode) void {
                 this.selected = false;
                 this.text.tint = .white;
@@ -641,14 +650,13 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
         pub fn init(gpa: std.mem.Allocator, manager: *Manager) !*This {
             const node = try gpa.create(This);
             node.gpa = gpa;
-            node.accept_input = true;
             node.active = @enumFromInt(fields[0].value);
             node.manager = manager;
             node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
             node.layout_node = try node.layout.toNode();
             node.layout_node.space.offset.x = 12;
-            for (0..fields.len) |i| {
-                node.entries[i] = try .init(gpa, node, fields[i].name);
+            inline for (0..fields.len) |i| {
+                node.entries[i] = try .init(gpa, node, @enumFromInt(fields[i].value), fields[i].name);
                 node.entry_nodes[i] = try node.entries[i].toNode();
                 try node.entry_nodes[i].setId(fields[i].name);
                 try node.layout_node.addChild(node.entry_nodes[i]);
@@ -661,6 +669,11 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             this.gpa.destroy(this);
         }
 
+        pub fn hover(this: *This, node: *EntryNode) void {
+            this.active = node.entry;
+            this.updateNodes();
+        }
+
         pub fn updateNodes(this: *This) void {
             inline for (0..fields.len) |i| {
                 this.entries[i].deselect();
@@ -668,9 +681,8 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             }
         }
 
-        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Node.Propagation {
+        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Propagation {
             const this: *This = @ptrCast(@alignCast(ptr));
-            if (!this.accept_input) return .dont_propagate;
             switch (key) {
                 .j => {
                     inline for (fields, 0..) |field, i| {
@@ -707,10 +719,19 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             return .dont_propagate;
         }
 
+        fn onClick(_: *anyopaque, node: *ui.Node, btn: rl.MouseButton, relative_pos: ?rl.Vector2) !ui.Propagation {
+            const this = node.mgr(This);
+            if (btn != .left) return .propagate;
+            if (relative_pos == null) return .propagate;
+            func(this.manager, this.active);
+            return .consume;
+        }
+
         const vtable: ui.Node.VTable = .{
             .deinit = ui.Node.VTable.basicOpaqueDeinit(This),
             .on_input = onInput,
             .type_info = ui.Node.VTable.basicTypeInfo(This, &.{}),
+            .on_click = onClick,
         };
         pub fn toNode(this: *This) !*ui.Node {
             const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
@@ -788,7 +809,7 @@ pub const MenuManager = struct {
         this.mode_menu = try .init(try ModeMenu.init(this.gpa, this));
         try this.layout_node.addChild(this.mode_menu.?.node);
         try this.layout_node.recalculateNodeGraphSize();
-        this.main_menu.?.manager.accept_input = false;
+        this.main_menu.?.node.frozen = true;
     }
 
     pub fn close(this: *MenuManager) !void {
@@ -823,7 +844,7 @@ pub const MenuManager = struct {
             }
             this.mode_menu = null;
         }
-        if (this.main_menu) |m| m.manager.accept_input = true;
+        if (this.main_menu) |m| m.node.frozen = false;
         try this.layout_node.recalculateNodeGraphSize();
     }
 
@@ -935,6 +956,7 @@ pub fn main(init: std.process.Init) !void {
         var board = try Board.init(init.gpa, 60, &camera, target_mode);
         defer board.deinit();
         try board.setup(init.io);
+        var last_cursor = rl.getMousePosition().divide(root.true_size).multiply(root.screen_size);
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
             const dt = rl.getFrameTime();
             if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
@@ -947,6 +969,12 @@ pub fn main(init: std.process.Init) !void {
             if (rl.isKeyPressed(.p)) {
                 inspector.is_open = !inspector.is_open;
             }
+            const cursor = rl.getMousePosition().divide(root.true_size).multiply(root.screen_size);
+            defer last_cursor = cursor;
+            if (!cursor.equals(last_cursor)) {
+                try root_node.cursorPos(cursor, cursor);
+            }
+            try root_node.tick(dt);
             if (menu.main_menu == null) {
                 try board.tick(dt);
             } else {
@@ -971,6 +999,9 @@ pub fn main(init: std.process.Init) !void {
                     _ = try root_node.onClick(.left, rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
                 }
                 try root_node.tick(rl.getFrameTime());
+            }
+            if ((should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+                continue;
             }
             rl.beginDrawing();
             defer rl.endDrawing();
