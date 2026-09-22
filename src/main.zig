@@ -913,6 +913,12 @@ pub fn main(init: std.process.Init) !void {
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
+    var toggled: bool = false;
+    const toggler = try ui.ToggleNode.init(init.gpa, &toggled, .green, .white);
+    const toggler_node = try toggler.toNode();
+    try toggler_node.resize(.init(50, 50));
+    try root_node.addChildAt(toggler_node, .init(500, 50));
+
     try inspector.setRoot(root_node);
 
     var keys_pressed: std.ArrayList(rl.KeyboardKey) = .empty;
@@ -926,7 +932,7 @@ pub fn main(init: std.process.Init) !void {
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, 75, &camera, target_mode);
+        var board = try Board.init(init.gpa, 60, &camera, target_mode);
         defer board.deinit();
         try board.setup(init.io);
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {

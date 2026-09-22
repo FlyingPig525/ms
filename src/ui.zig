@@ -5,8 +5,8 @@ const rl = @import("raylib");
 ///
 /// All `Node`s derive themselves from a "manager," a struct that manages
 /// the data and handles the events passed through a `Node`.
-/// Managers are generally allocated in memory, though they don't have to be. If they are, their lifetime
-/// is directly tied with the lifetime of the `Node`.
+/// Managers are generally allocated in memory, though they don't have to be. If they are, their
+/// lifetime is directly tied with the lifetime of the `Node`.
 ///
 /// Each `Node` has children, which are also `Node`s. This creates a UI graph that is traversed to draw,
 /// handle input, and more. The UI graph begins with a top-level `Node`, generally a `RootNode`. These
@@ -39,6 +39,10 @@ pub const Node = struct {
         node.parent = null;
         node.id = null;
         return node;
+    }
+
+    pub inline fn mgr(this: *Node, comptime T: type) *T {
+        return @ptrCast(@alignCast(this.manager));
     }
 
     /// Recursively deinitializes this node and all children in the graph of this node.
@@ -282,6 +286,8 @@ pub const Node = struct {
         return this.parent.?.tools.scale_size(this.parent.?, size);
     }
 
+    /// Starts raylib scissor mode with values in scale-space.
+    /// Must be ended with `@import("raylib").endScissorMode()`
     pub fn beginScissorMode(this: *Node, pos: rl.Vector2, size: rl.Vector2) void {
         const true_pos = pos.multiply(this.space.size).add(this.space.offset);
         const true_size = size.multiply(this.space.size);
@@ -305,7 +311,7 @@ pub const Node = struct {
                 if (child.space.offset.x > largest_offset.x) largest_offset.x = child.space.offset.x;
                 if (child.space.offset.y > largest_offset.y) largest_offset.y = child.space.offset.y;
             }
-            this.space.size = size.add(largest_offset);
+            this.space.size = size.add(largest_offset).max(this.space.size);
         }
     }
 
@@ -346,7 +352,7 @@ pub const Node = struct {
     //
     // i dont really know why i chose to make this an enum instead of just making the functions return a bool to indicate
     // propagation, but oh well..
-    // with the addition of consume, we now know.
+    // with the addition of consume, i now know.
 
     /// Whether to propagate the event to children.
     ///
@@ -420,6 +426,14 @@ pub const Node = struct {
                             [:0]const u8, [:0]u8 => .{ .string = .{ .name = names[i], .ptr = @field(this, field) } },
                             rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = &@field(this, field) } },
                             rl.Color => .{ .color = .{ .name = names[i], .ptr = &@field(this, field) } },
+                            // there is probably a better way to do this
+                            *i32 => .{ .int = .{ .name = names[i], .ptr = @field(this, field) } },
+                            *usize => .{ .usize = .{ .name = names[i], .ptr = @field(this, field) } },
+                            *f32 => .{ .float = .{ .name = names[i], .ptr = @field(this, field) } },
+                            *bool => .{ .boolean = .{ .name = names[i], .ptr = @field(this, field) } },
+                            *rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = @field(this, field) } },
+                            *rl.Color => .{ .color = .{ .name = names[i], .ptr = @field(this, field) } },
+
                             else => @compileError("Cannot convert field " ++ @typeName(@FieldType(T, field)) ++ " to a property"),
                         };
                     }
@@ -912,12 +926,14 @@ pub const RectNode = struct {
     }
 };
 
+/// Draws a texture to the screen.
 pub const TextureNode = struct {
     gpa: std.mem.Allocator,
     texture: rl.Texture,
     scale: f32,
     owns_texture: bool,
 
+    /// `owns_texture` - when true, the texture will be unloaded when this node is deinitialized.
     pub fn init(gpa: std.mem.Allocator, texture: rl.Texture, owns_texture: bool) !*TextureNode {
         const node = try gpa.create(TextureNode);
         node.gpa = gpa;
@@ -999,14 +1015,9 @@ pub const TextInputNode = struct {
         .on_click = onClick,
         .on_input = onInput,
         .draw = draw,
-        .calculate_size = calculateSize,
     };
     pub fn toNode(this: *TextInputNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
-    }
-
-    fn calculateSize(_: *anyopaque, node: *Node) !rl.Vector2 {
-        return node.space.size;
     }
 
     fn draw(ptr: *anyopaque, node: *Node) !void {
@@ -1111,7 +1122,7 @@ pub const TextInputNode = struct {
                             this.gpa.free(this.text);
                             this.text = new;
                         }
-                        @memmove(this.text[this.cursor + 1..], this.text[this.cursor..this.text.len - 1]);
+                        @memmove(this.text[this.cursor + 1 ..], this.text[this.cursor .. this.text.len - 1]);
                         this.text[this.cursor] = char;
                         this.cursor += 1;
                     }
@@ -1119,5 +1130,51 @@ pub const TextInputNode = struct {
             },
         }
         return .consume;
+    }
+};
+
+pub const ToggleNode = struct {
+    gpa: std.mem.Allocator,
+    toggled: *bool,
+    outline_color: rl.Color,
+    active_color: rl.Color,
+
+    pub fn init(gpa: std.mem.Allocator, toggled: *bool, outline_color: rl.Color, active_color: rl.Color) !*ToggleNode {
+        const node = try gpa.create(ToggleNode);
+        node.gpa = gpa;
+        node.toggled = toggled;
+        node.outline_color = outline_color;
+        node.active_color = active_color;
+        return node;
+    }
+
+    pub fn deinit(this: *ToggleNode) void {
+        this.gpa.destroy(this);
+    }
+
+    const vtable: Node.VTable = .{
+        .deinit = Node.VTable.basicOpaqueDeinit(ToggleNode),
+        .type_info = Node.VTable.basicTypeInfo(ToggleNode, &.{ "toggled", "outline_color", "active_color" }),
+        .draw = draw,
+        .on_click = onClick,
+    };
+    pub fn toNode(this: *ToggleNode) !*Node {
+        const node = try Node.init(this.gpa, this, .zero, &vtable);
+        return node;
+    }
+
+    fn draw(_: *anyopaque, node: *Node) !void {
+        const this = node.mgr(ToggleNode);
+        if (this.toggled.*) {
+            node.drawRect(.init(0, 0, 1, 1), this.active_color);
+        }
+        node.drawRectLines(.init(0, 0, 1, 1), 2, this.outline_color);
+    }
+
+    fn onClick(_: *anyopaque, node: *Node, btn: rl.MouseButton, relative: ?rl.Vector2) !Node.Propagation {
+        const this = node.mgr(ToggleNode);
+        if (relative == null or btn != .left) return .propagate;
+        this.toggled.* = !this.toggled.*;
+        return .dont_propagate;
     }
 };
