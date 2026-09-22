@@ -175,7 +175,7 @@ pub const Entry = struct {
 
     pub fn drawProperties(this: *Entry, offset: rl.Vector2) !void {
         this.info.deinit(this.gpa);
-        this.info = try this.node.vtable.type_info(this.node.manager, this.node, this.gpa);
+        this.info = try this.node.vtable.type_info(this.node, this.gpa);
         if (this.info.properties) |p| {
             const state = this.state.?;
             var i: f32 = 0;
@@ -255,7 +255,7 @@ pub const Entry = struct {
         for (node.children.items, 0..) |child, i| {
             children[i] = try Entry.init(gpa, child, inspector);
         }
-        const info = try node.vtable.type_info(node.manager, node, gpa);
+        const info = try node.vtable.type_info(node, gpa);
         const state = if (info.properties) |p| try gpa.alloc(InfoState, p.len) else null;
         if (info.properties) |p| {
             for (p, 0..) |prop, i| {

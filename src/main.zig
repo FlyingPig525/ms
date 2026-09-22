@@ -618,8 +618,8 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             }
 
             // this isnt how i would recommend doing this, but i cant think of a easier way right now
-            fn calculateSize(ptr: *anyopaque, _: *ui.Node) !rl.Vector2 {
-                const this: *EntryNode = @ptrCast(@alignCast(ptr));
+            fn calculateSize(node: *ui.Node) !rl.Vector2 {
+                const this = node.mgr(EntryNode);
                 try this.text_node.calculateSize();
                 this.rect_node.space.size.y = this.text_node.space.size.y;
                 return this.text_node.space.size.add(.init(12, 0));
@@ -681,8 +681,8 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             }
         }
 
-        fn onInput(ptr: *anyopaque, _: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Propagation {
-            const this: *This = @ptrCast(@alignCast(ptr));
+        fn onInput(node: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Propagation {
+            const this = node.mgr(This);
             switch (key) {
                 .j => {
                     inline for (fields, 0..) |field, i| {
@@ -719,7 +719,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             return .dont_propagate;
         }
 
-        fn onClick(_: *anyopaque, node: *ui.Node, btn: rl.MouseButton, relative_pos: ?rl.Vector2) !ui.Propagation {
+        fn onClick(node: *ui.Node, btn: rl.MouseButton, relative_pos: ?rl.Vector2) !ui.Propagation {
             const this = node.mgr(This);
             if (btn != .left) return .propagate;
             if (relative_pos == null) return .propagate;

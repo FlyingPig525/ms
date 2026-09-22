@@ -74,8 +74,8 @@ pub const Node = struct {
     pub fn addChild(this: *Node, child: *Node) !void {
         try this.children.append(this.gpa, child);
         child.parent = this;
-        if (this.vtable.add_child) |i| try i(this.manager, this, child);
-        if (child.vtable.parented) |i| try i(child.manager, child, this);
+        if (this.vtable.add_child) |i| try i(this, child);
+        if (child.vtable.parented) |i| try i(child, this);
     }
 
     pub fn addChildAt(this: *Node, child: *Node, offset: rl.Vector2) !void {
@@ -313,7 +313,7 @@ pub const Node = struct {
     /// If this node's `vtable` contains a `calculate_size` member, it calls that instead.
     pub fn calculateSize(this: *Node) !void {
         if (this.vtable.calculate_size) |i| {
-            this.space.size = try i(this.manager, this);
+            this.space.size = try i(this);
         } else {
             var size: rl.Vector2 = .init(0, 0);
             var largest_offset: rl.Vector2 = .init(0, 0);
@@ -365,25 +365,25 @@ pub const Node = struct {
         /// this node was not clicked.
         ///
         /// Returns whether to propagate this event to children.
-        on_click: ?(*const fn (this: *anyopaque, node: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) anyerror!Propagation) = null,
+        on_click: ?(*const fn (node: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) anyerror!Propagation) = null,
         /// Fires whenever a keyboard key is pressed.
         ///
         /// Returns whether to propagate this event to children.
-        on_input: ?(*const fn (this: *anyopaque, node: *Node, key: rl.KeyboardKey, repeat: bool) anyerror!Propagation) = null,
+        on_input: ?(*const fn (node: *Node, key: rl.KeyboardKey, repeat: bool) anyerror!Propagation) = null,
         /// Fires whenever a child is added to this node, before `parented` is fired on the child.
-        add_child: ?(*const fn (this: *anyopaque, node: *Node, child: *Node) anyerror!void) = null,
+        add_child: ?(*const fn (node: *Node, child: *Node) anyerror!void) = null,
         /// Fires every frame, allowing a node to draw to the screen using the draw functions available through
         /// `node`.
-        draw: ?(*const fn (this: *anyopaque, node: *Node) anyerror!void) = null,
+        draw: ?(*const fn (node: *Node) anyerror!void) = null,
         /// Fires before every frame.
-        tick: ?(*const fn (this: *anyopaque, node: *Node, dt: f32) anyerror!void) = null,
+        tick: ?(*const fn (node: *Node, dt: f32) anyerror!void) = null,
         /// Fires when this node becomes a child of another node, after `add_child` is fired on the parent.
-        parented: ?(*const fn (this: *anyopaque, node: *Node, parent: *Node) anyerror!void) = null,
+        parented: ?(*const fn (node: *Node, parent: *Node) anyerror!void) = null,
         /// Returns the size of this node. This is automatically called recursively on the node graph when
         /// this node or a parent node is attached to a `RootNode`.
         ///
         /// If this member has a value, the function pointed to must call `calculateSize` on each of its children.
-        calculate_size: ?(*const fn (this: *anyopaque, node: *Node) anyerror!rl.Vector2) = null,
+        calculate_size: ?(*const fn (node: *Node) anyerror!rl.Vector2) = null,
         /// Fires every frame, before tick.
         /// `relative` - the position of the curosr, minus the node's absolute offset. Null if this node
         /// was not clicked.
@@ -401,7 +401,7 @@ pub const Node = struct {
         /// for the inspector. Result must be deinitialized.
         ///
         /// For an easy implementation, use `Node.VTable.basicTypeInfo`
-        type_info: *const fn (this: *anyopaque, node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo,
+        type_info: *const fn (node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo,
 
         pub const nop: VTable = .{};
 
@@ -410,11 +410,11 @@ pub const Node = struct {
         const size_name = "size";
         const id_name = "id";
         const null_str = "null";
-        pub fn basicTypeInfo(comptime T: type, comptime fields: []const [:0]const u8) *const fn (this: *anyopaque, node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo {
+        pub fn basicTypeInfo(comptime T: type, comptime fields: []const [:0]const u8) *const fn (node: *Node, gpa: std.mem.Allocator) anyerror!NodeInfo {
             return struct {
                 const names = fields;
-                pub fn typeInfo(ptr: *anyopaque, node: *Node, gpa: std.mem.Allocator) !NodeInfo {
-                    const this: *T = @ptrCast(@alignCast(ptr));
+                pub fn typeInfo(node: *Node, gpa: std.mem.Allocator) !NodeInfo {
+                    const this = node.mgr(T);
                     const props = try gpa.alloc(NodeInfo.Property, fields.len + 3);
                     props[0] = .{ .string = .{ .name = id_name, .ptr = node.id orelse null_str } };
                     props[1] = .{ .vector = .{ .name = offset_name, .ptr = &node.space.offset } };
@@ -487,7 +487,7 @@ pub const Node = struct {
     pub fn onClick(this: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) !bool {
         if (this.frozen) return false;
         if (this.vtable.on_click) |c| {
-            const ret = try c(this.manager, this, button, relative_pos);
+            const ret = try c(this, button, relative_pos);
             if (ret == .consume) return true;
             if (ret == .dont_propagate) return false;
         }
@@ -511,7 +511,7 @@ pub const Node = struct {
     pub fn onInput(this: *Node, key: rl.KeyboardKey, repeat: bool) !bool {
         if (this.frozen) return false;
         if (this.vtable.on_input) |i| {
-            const ret = try i(this.manager, this, key, repeat);
+            const ret = try i(this, key, repeat);
             if (ret == .consume) return true;
             if (ret == .dont_propagate) return false;
         }
@@ -522,14 +522,14 @@ pub const Node = struct {
     }
 
     pub fn draw(this: *Node) !void {
-        if (this.vtable.draw) |i| try i(this.manager, this);
+        if (this.vtable.draw) |i| try i(this);
         for (this.children.items) |child| {
             try child.draw();
         }
     }
 
     pub fn tick(this: *Node, dt: f32) !void {
-        if (this.vtable.tick) |i| try i(this.manager, this, dt);
+        if (this.vtable.tick) |i| try i(this, dt);
         for (this.children.items) |child| {
             try child.tick(dt);
         }
@@ -582,7 +582,7 @@ pub const RootNode = struct {
     };
 
     fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_rect: rl.Rectangle = .{
             .x = (rect.x / this.screen_size.x) * this.true_size.x,
             .y = (rect.y / this.screen_size.y) * this.true_size.y,
@@ -593,7 +593,7 @@ pub const RootNode = struct {
     }
 
     fn drawRectLines(node: *Node, rect: rl.Rectangle, thickness: f32, color: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_rect: rl.Rectangle = .{
             .x = (rect.x / this.screen_size.x) * this.true_size.x,
             .y = (rect.y / this.screen_size.y) * this.true_size.y,
@@ -604,7 +604,7 @@ pub const RootNode = struct {
     }
 
     fn drawLine(node: *Node, start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_start: rl.Vector2 = .{
             .x = (start.x / this.screen_size.x) * this.true_size.x,
             .y = (start.y / this.screen_size.y) * this.true_size.y,
@@ -617,7 +617,7 @@ pub const RootNode = struct {
     }
 
     fn drawCircle(node: *Node, center: rl.Vector2, radius: f32, color: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_center: rl.Vector2 = .{
             .x = (center.x / this.screen_size.x) * this.true_size.x,
             .y = (center.y / this.screen_size.y) * this.true_size.y,
@@ -626,7 +626,7 @@ pub const RootNode = struct {
     }
 
     fn drawText(node: *Node, font: rl.Font, text: [:0]const u8, pos: rl.Vector2, font_size: f32, spacing: f32, tint: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_pos: rl.Vector2 = .{
             .x = (pos.x / this.screen_size.x) * this.true_size.x,
             .y = (pos.y / this.screen_size.y) * this.true_size.y,
@@ -635,30 +635,30 @@ pub const RootNode = struct {
     }
 
     fn drawTexture(node: *Node, texture: rl.Texture, pos: rl.Vector2, scale: f32, tint: rl.Color) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_pos = pos.divide(this.screen_size).multiply(this.true_size);
         texture.drawEx(true_pos, 0, scale, tint);
     }
 
     fn measureText(node: *Node, font: rl.Font, text: [:0]const u8, font_size: f32, spacing: f32) rl.Vector2 {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const vec = rl.measureTextEx(font, text, font_size, spacing);
         return vec.divide(this.true_size).multiply(this.screen_size);
     }
 
     fn scaleSize(node: *Node, size: rl.Vector2) rl.Vector2 {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         return size.divide(this.true_size).multiply(this.screen_size);
     }
 
     fn beginScissorMode(node: *Node, pos: rl.Vector2, size: rl.Vector2) void {
-        const this: *RootNode = @ptrCast(@alignCast(node.manager));
+        const this = node.mgr(RootNode);
         const true_pos = pos.divide(this.screen_size).multiply(this.true_size);
         const true_size = size.divide(this.screen_size).multiply(this.true_size);
         rl.beginScissorMode(@trunc(true_pos.x), @trunc(true_pos.y), @trunc(true_size.x), @trunc(true_size.y));
     }
 
-    fn addChild(_: *anyopaque, node: *Node, _: *Node) !void {
+    fn addChild(node: *Node, _: *Node) !void {
         try node.calculateSize();
     }
 
@@ -703,13 +703,13 @@ pub const TextNode = struct {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
     }
 
-    fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *TextNode = @ptrCast(@alignCast(ptr));
+    fn draw(node: *Node) !void {
+        const this = node.mgr(TextNode);
         node.drawText(this.font, this.text, .init(0, 0), this.font_size, @floatFromInt(this.font.glyphPadding), this.tint);
     }
 
-    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
-        const this: *TextNode = @ptrCast(@alignCast(ptr));
+    fn calculateSize(node: *Node) !rl.Vector2 {
+        const this = node.mgr(TextNode);
         return node.measureText(this.font, this.text, this.font_size, @floatFromInt(this.font.glyphPadding));
     }
 };
@@ -769,8 +769,8 @@ pub const LayoutNode = struct {
         end,
     };
 
-    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
-        const this: *LayoutNode = @ptrCast(@alignCast(ptr));
+    fn calculateSize(node: *Node) !rl.Vector2 {
+        const this = node.mgr(LayoutNode);
         return switch (this.direction) {
             .horizontal => try this.horizLayout(node),
             .vertical => try this.vertLayout(node),
@@ -901,13 +901,13 @@ pub const ImageNode = struct {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
-    fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *ImageNode = @ptrCast(@alignCast(ptr));
+    fn draw(node: *Node) !void {
+        const this = node.mgr(ImageNode);
         node.drawTexture(this.texture, .init(0, 0), .white);
     }
 
-    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
-        const this: *ImageNode = @ptrCast(@alignCast(ptr));
+    fn calculateSize(node: *Node) !rl.Vector2 {
+        const this = node.mgr(ImageNode);
         if (!this.loaded) {
             if (this.target_size) |size| {
                 this.image.resize(@floor(size.x), @floor(size.y));
@@ -945,8 +945,8 @@ pub const RectNode = struct {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
-    fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *RectNode = @ptrCast(@alignCast(ptr));
+    fn draw(node: *Node) !void {
+        const this = node.mgr(RectNode);
         node.drawRect(.init(0, 0, 1, 1), this.color);
     }
 };
@@ -984,13 +984,13 @@ pub const TextureNode = struct {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
-    fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+    fn draw(node: *Node) !void {
+        const this = node.mgr(TextureNode);
         node.drawTexture(this.texture, .zero(), this.scale, .white);
     }
 
-    fn calculateSize(ptr: *anyopaque, node: *Node) !rl.Vector2 {
-        const this: *TextureNode = @ptrCast(@alignCast(ptr));
+    fn calculateSize(node: *Node) !rl.Vector2 {
+        const this = node.mgr(TextureNode);
         return node.scaleSize(.init(@floatFromInt(this.texture.width), @floatFromInt(this.texture.height)));
     }
 };
@@ -1045,8 +1045,8 @@ pub const TextInputNode = struct {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
-    fn draw(ptr: *anyopaque, node: *Node) !void {
-        const this: *TextInputNode = @ptrCast(@alignCast(ptr));
+    fn draw(node: *Node) !void {
+        const this = node.mgr(TextInputNode);
 
         node.drawRect(.init(0, 0, 1, 1), if (this.focused) rl.Color.white.brightness(-0.08) else .white);
         node.drawRectLines(.init(0, 0, 1, 1), 3, .dark_gray);
@@ -1073,8 +1073,8 @@ pub const TextInputNode = struct {
         rl.endScissorMode();
     }
 
-    fn onClick(ptr: *anyopaque, _: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) !Propagation {
-        const this: *TextInputNode = @ptrCast(@alignCast(ptr));
+    fn onClick(node: *Node, button: rl.MouseButton, relative_pos: ?rl.Vector2) !Propagation {
+        const this = node.mgr(TextInputNode);
         if (button != .left) return .propagate;
         if (relative_pos) |_| {
             this.focused = true;
@@ -1085,8 +1085,8 @@ pub const TextInputNode = struct {
         return .dont_propagate;
     }
 
-    fn onInput(ptr: *anyopaque, _: *Node, key: rl.KeyboardKey, _: bool) !Propagation {
-        const this: *TextInputNode = @ptrCast(@alignCast(ptr));
+    fn onInput(node: *Node, key: rl.KeyboardKey, _: bool) !Propagation {
+        const this = node.mgr(TextInputNode);
         if (!this.focused) return .propagate;
         switch (key) {
             .escape => {
@@ -1188,7 +1188,7 @@ pub const ToggleNode = struct {
         return node;
     }
 
-    fn draw(_: *anyopaque, node: *Node) !void {
+    fn draw(node: *Node) !void {
         const this = node.mgr(ToggleNode);
         if (this.toggled.*) {
             node.drawRect(.init(0, 0, 1, 1), this.active_color);
@@ -1196,7 +1196,7 @@ pub const ToggleNode = struct {
         node.drawRectLines(.init(0, 0, 1, 1), 2, this.outline_color);
     }
 
-    fn onClick(_: *anyopaque, node: *Node, btn: rl.MouseButton, relative: ?rl.Vector2) !Propagation {
+    fn onClick(node: *Node, btn: rl.MouseButton, relative: ?rl.Vector2) !Propagation {
         const this = node.mgr(ToggleNode);
         if (relative == null or btn != .left) return .propagate;
         this.toggled.* = !this.toggled.*;
