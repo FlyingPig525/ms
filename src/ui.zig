@@ -437,7 +437,6 @@ pub const Node = struct {
                             *bool => .{ .boolean = .{ .name = names[i], .ptr = @field(this, field) } },
                             *rl.Vector2 => .{ .vector = .{ .name = names[i], .ptr = @field(this, field) } },
                             *rl.Color => .{ .color = .{ .name = names[i], .ptr = @field(this, field) } },
-
                             else => @compileError("Cannot convert field " ++ @typeName(@FieldType(T, field)) ++ " to a property"),
                         };
                     }

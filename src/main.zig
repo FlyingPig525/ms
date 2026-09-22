@@ -194,6 +194,10 @@ const Camera = struct {
         this.animateMove(this.target.x + x, this.target.y + y, duration);
     }
 
+    pub fn shift(this: *Camera, x: f32, y: f32) void {
+        this.move(this.target.x + x, this.target.y + y);
+    }
+
     pub fn move(this: *Camera, x: f32, y: f32) void {
         this.last_pos = this.camera.target;
         this.target = .{ .x = x, .y = y };
@@ -232,6 +236,11 @@ const Camera = struct {
     }
 };
 
+const Settings = struct {
+    keyboard_mode: bool = true,
+    invert_mouse_wheel: bool = false,
+};
+
 const Board = struct {
     const chunk_size = 16;
 
@@ -243,6 +252,7 @@ const Board = struct {
     cursor_pos: IVec2 = .{ .x = 0, .y = 0 },
     camera: *Camera,
     mode: Mode,
+    settings: *Settings,
     end_thyself: bool = false,
     dead: bool = false,
 
@@ -251,13 +261,14 @@ const Board = struct {
         flag_only,
     };
 
-    pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera, mode: Mode) !Board {
+    pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera, mode: Mode, settings: *Settings) !Board {
         return .{
             .scene = .empty,
             .chunk_bomb_count = chunk_bomb_count,
             .arena = .init(gpa),
             .camera = camera,
             .mode = mode,
+            .settings = settings,
         };
     }
 
@@ -267,21 +278,71 @@ const Board = struct {
 
     const min_camera_zoom = 1.8719;
     pub fn tick(this: *Board, dt: f32) !void {
-        if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
-            this.cursor_pos.x -= 1;
-            this.camera.animateShift(-20, 0, 0.2);
-        }
-        if (rl.isKeyPressed(.d) or rl.isKeyPressedRepeat(.d)) {
-            this.cursor_pos.x += 1;
-            this.camera.animateShift(20, 0, 0.2);
-        }
-        if (rl.isKeyPressed(.w) or rl.isKeyPressedRepeat(.w)) {
-            this.cursor_pos.y -= 1;
-            this.camera.animateShift(0, -20, 0.2);
-        }
-        if (rl.isKeyPressed(.s) or rl.isKeyPressedRepeat(.s)) {
-            this.cursor_pos.y += 1;
-            this.camera.animateShift(0, 20, 0.2);
+        if (this.settings.keyboard_mode) {
+            if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
+                this.cursor_pos.x -= 1;
+                this.camera.animateShift(-20, 0, 0.2);
+            }
+            if (rl.isKeyPressed(.d) or rl.isKeyPressedRepeat(.d)) {
+                this.cursor_pos.x += 1;
+                this.camera.animateShift(20, 0, 0.2);
+            }
+            if (rl.isKeyPressed(.w) or rl.isKeyPressedRepeat(.w)) {
+                this.cursor_pos.y -= 1;
+                this.camera.animateShift(0, -20, 0.2);
+            }
+            if (rl.isKeyPressed(.s) or rl.isKeyPressedRepeat(.s)) {
+                this.cursor_pos.y += 1;
+                this.camera.animateShift(0, 20, 0.2);
+            }
+            if (rl.isKeyPressed(.space)) blk: {
+                if (this.dead) {
+                    this.end_thyself = true;
+                    break :blk;
+                }
+                try this.reveal(this.cursor_pos);
+            }
+
+            if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) {
+                try this.flag(this.cursor_pos);
+            }
+        } else {
+            if (rl.isKeyDown(.a)) {
+                this.camera.shift(-200 * dt, 0);
+            }
+            if (rl.isKeyDown(.d)) {
+                this.camera.shift(200 * dt, 0);
+            }
+            if (rl.isKeyDown(.w)) {
+                this.camera.shift(0, -200 * dt);
+            }
+            if (rl.isKeyDown(.s)) {
+                this.camera.shift(0, 200 * dt);
+            }
+
+            if (rl.isMouseButtonPressed(.right)) {
+                const cursor_screen = rl.getMousePosition();
+                const cursor = rl.getScreenToWorld2D(cursor_screen, this.camera.camera).divide(.init(20, 20));
+                const cell = IVec2{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
+                try this.flag(cell);
+            }
+            if (rl.isMouseButtonPressed(.left)) blk: {
+                if (this.dead) {
+                    this.end_thyself = true;
+                    break :blk;
+                }
+
+                const cursor_screen = rl.getMousePosition();
+                const cursor = rl.getScreenToWorld2D(cursor_screen, this.camera.camera).divide(.init(20, 20));
+                const cell = IVec2{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
+                try this.reveal(cell);
+            }
+            const mul_vec: rl.Vector2 = if (this.settings.invert_mouse_wheel) .init(-2, -2) else .init(2, 2);
+            const wheel = rl.getMouseWheelMoveV().multiply(mul_vec);
+            if (!wheel.equals(.zero())) {
+                this.camera.shift(wheel.x, wheel.y);
+            }
+            // TODO: when raylib can do trackpad pinching, add that
         }
         if (rl.isKeyDown(.e)) {
             this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom + (this.camera.camera.zoom * 3 * dt), min_camera_zoom, 100);
@@ -293,52 +354,48 @@ const Board = struct {
             this.camera.camera.zoom = min_camera_zoom;
         }
 
-        if (rl.isKeyPressed(.space)) blk: {
-            if (this.dead) {
-                this.end_thyself = true;
-                break :blk;
+        this.camera.tick();
+    }
+
+    fn reveal(this: *Board, pos: IVec2) !void {
+        if (this.mode == .flag_only and !pos.eql(.{ .x = 1, .y = 1 })) return;
+        const ptr = this.getPtr(pos.x, pos.y) orelse {
+            std.log.err("null cell {d} {d}\n", .{ pos.x, pos.y });
+            return;
+        };
+        if (ptr.flagged()) return;
+        if (!ptr.hidden() and ptr.* == .number and this.mode != .flag_only) {
+            if (try ptr.fullFlagReveal(.{ .x = pos.x, .y = pos.y, .list = this })) {
+                this.dead = true;
             }
-            if (this.mode == .flag_only and !this.cursor_pos.eql(.{ .x = 1, .y = 1 })) break :blk;
-            const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
-                std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
-                break :blk;
-            };
-            if (ptr.flagged()) break :blk;
-            if (!ptr.hidden() and ptr.* == .number and this.mode != .flag_only) {
-                if (try ptr.fullFlagReveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this })) {
-                    this.dead = true;
-                }
-            } else {
-                const t = try ptr.reveal(.{ .x = this.cursor_pos.x, .y = this.cursor_pos.y, .list = this });
-                if (t == .mine) {
-                    this.dead = true;
-                }
+        } else {
+            const t = try ptr.reveal(.{ .x = pos.x, .y = pos.y, .list = this });
+            if (t == .mine) {
+                this.dead = true;
             }
         }
+    }
 
-        if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) blk: {
-            if (this.dead) break :blk;
-            const ptr = this.getPtr(this.cursor_pos.x, this.cursor_pos.y) orelse {
-                std.debug.print("null cell {d} {d}\n", .{ this.cursor_pos.x, this.cursor_pos.y });
-                break :blk;
-            };
-            ptr.toggleFlag();
-            if (this.mode == .flag_only) {
-                var x: i32 = -1;
-                loop: while (x <= 1) : (x += 1) {
-                    var y: i32 = -1;
-                    while (y <= 1) : (y += 1) {
-                        const cell = this.getPtr(this.cursor_pos.x + x, this.cursor_pos.y + y) orelse continue;
-                        if (try cell.fullFlagReveal(.{ .x = this.cursor_pos.x + x, .y = this.cursor_pos.y + y, .list = this })) {
-                            this.dead = true;
-                            break :loop;
-                        }
+    fn flag(this: *Board, pos: IVec2) !void {
+        if (this.dead) return;
+        const ptr = this.getPtr(pos.x, pos.y) orelse {
+            std.log.err("null cell {d} {d}\n", .{ pos.x, pos.y });
+            return;
+        };
+        ptr.toggleFlag();
+        if (this.mode == .flag_only) {
+            var x: i32 = -1;
+            loop: while (x <= 1) : (x += 1) {
+                var y: i32 = -1;
+                while (y <= 1) : (y += 1) {
+                    const cell = this.getPtr(pos.x + x, pos.y + y) orelse continue;
+                    if (try cell.fullFlagReveal(.{ .x = pos.x + x, .y = pos.y + y, .list = this })) {
+                        this.dead = true;
+                        break :loop;
                     }
                 }
             }
         }
-
-        this.camera.tick();
     }
 
     pub fn setup(this: *Board, io: std.Io) !void {
@@ -395,6 +452,12 @@ const Board = struct {
         }
     }
 
+    fn mouseToCell(this: *Board) IVec2 {
+        const cursor_screen = rl.getMousePosition();
+        const cursor = rl.getScreenToWorld2D(cursor_screen, this.camera.camera).divide(.init(20, 20));
+        return .{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
+    }
+
     pub fn draw(this: *Board) !void {
         {
             rl.beginMode2D(this.camera.camera);
@@ -403,12 +466,13 @@ const Board = struct {
             const tl_vec = IVec2{ .x = @floor(tl_pos.x / 20), .y = @floor(tl_pos.y / 20) };
             const br_pos = rl.getScreenToWorld2D(.init(@floatFromInt(rl.getScreenWidth()), @floatFromInt(rl.getScreenHeight())), this.camera.camera);
             const br_vec = IVec2{ .x = @floor(br_pos.x / 20), .y = @floor(br_pos.y / 20) };
+            const cursor = if (this.settings.keyboard_mode) this.cursor_pos else this.mouseToCell();
             var x = tl_vec.x;
             while (x <= br_vec.x) : (x += 1) {
                 var y = tl_vec.y;
                 while (y <= br_vec.y) : (y += 1) {
                     const cell = this.get(x, y) orelse continue;
-                    cell.draw(.{ .x = x, .y = y, .width = 20, .height = 20, .hovering = this.cursor_pos.lEql(x, y) });
+                    cell.draw(.{ .x = x, .y = y, .width = 20, .height = 20, .hovering = cursor.lEql(x, y) });
                 }
             }
         }
@@ -424,7 +488,7 @@ const Board = struct {
             const default = try rl.getFontDefault();
             const width = rl.measureTextEx(default, str, 64, @floatFromInt(default.glyphPadding));
             rl.drawText(str, @divFloor(screen_width, 2) - @as(i32, @trunc(width.x / 2)), 128, 64, .white);
-            const str2 = "Press space to restart";
+            const str2 = "Click/Space to restart";
             const width2 = rl.measureText(str2, 64);
             rl.drawText(str2, @divFloor(screen_width, 2) - @divFloor(width2, 2), 128 + @as(i32, @trunc(width.y)) + 15, 64, .white);
         }
@@ -747,12 +811,20 @@ pub const MenuManager = struct {
         Resume,
         Restart,
         Mode,
+        Settings,
         Exit,
     };
     const ModeMenu = Menu(MenuManager, ModeOptions, submitModeMenu);
     pub const ModeOptions = enum {
         Default,
         @"Flags Only",
+        Back,
+    };
+    // TODO: add actual settings ui entries
+    const SettingsMenu = Menu(MenuManager, SettingsOptions, submitSettingsMenu);
+    const SettingsOptions = enum {
+        @"Keyboard Mode",
+        @"Invert Scroll",
         Back,
     };
     fn NodePair(comptime Manager: type) type {
@@ -775,20 +847,24 @@ pub const MenuManager = struct {
     layout_node: *ui.Node,
     main_menu: ?NodePair(MainMenu),
     mode_menu: ?NodePair(ModeMenu),
+    settings_menu: ?NodePair(SettingsMenu),
     exit_ptr: *bool,
     restart_ptr: *bool,
     target_mode_ptr: *Board.Mode,
+    settings: *Settings,
 
-    pub fn init(gpa: std.mem.Allocator, exit_ptr: *bool, restart_ptr: *bool, target_mode_ptr: *Board.Mode) !*MenuManager {
+    pub fn init(gpa: std.mem.Allocator, exit_ptr: *bool, restart_ptr: *bool, target_mode_ptr: *Board.Mode, settings: *Settings) !*MenuManager {
         const node = try gpa.create(MenuManager);
         node.gpa = gpa;
         node.layout = try ui.LayoutNode.init(gpa, 12, .horizontal, .start);
         node.layout_node = try node.layout.toNode();
         node.main_menu = null;
         node.mode_menu = null;
+        node.settings_menu = null;
         node.exit_ptr = exit_ptr;
         node.restart_ptr = restart_ptr;
         node.target_mode_ptr = target_mode_ptr;
+        node.settings = settings;
         return node;
     }
 
@@ -806,8 +882,19 @@ pub const MenuManager = struct {
     pub fn openMode(this: *MenuManager) !void {
         if (this.mode_menu != null) return;
         if (this.main_menu == null) @panic("main menu null when mode menu is opening");
+        if (this.settings_menu != null) @panic("settings menu open when mode menu is opening");
         this.mode_menu = try .init(try ModeMenu.init(this.gpa, this));
         try this.layout_node.addChild(this.mode_menu.?.node);
+        try this.layout_node.recalculateNodeGraphSize();
+        this.main_menu.?.node.frozen = true;
+    }
+
+    pub fn openSettings(this: *MenuManager) !void {
+        if (this.settings_menu != null) return;
+        if (this.main_menu == null) @panic("main menu null when settings menu is opening");
+        if (this.mode_menu != null) @panic("mode menu open when settings menu is opening");
+        this.settings_menu = try .init(try SettingsMenu.init(this.gpa, this));
+        try this.layout_node.addChild(this.settings_menu.?.node);
         try this.layout_node.recalculateNodeGraphSize();
         this.main_menu.?.node.frozen = true;
     }
@@ -831,6 +918,16 @@ pub const MenuManager = struct {
             }
             this.mode_menu = null;
         }
+        if (this.settings_menu) |m| {
+            if (m.node.parent) |p| {
+                try m.node.setId("llllldwijaiwa");
+                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+            } else {
+                m.node.deinit();
+            }
+            this.settings_menu = null;
+        }
+
         try this.layout_node.recalculateNodeGraphSize();
     }
 
@@ -848,6 +945,20 @@ pub const MenuManager = struct {
         try this.layout_node.recalculateNodeGraphSize();
     }
 
+    pub fn closeSettings(this: *MenuManager) !void {
+        if (this.settings_menu) |m| {
+            if (m.node.parent) |p| {
+                try m.node.setId("llllldwijaiwa");
+                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+            } else {
+                m.node.deinit();
+            }
+            this.settings_menu = null;
+        }
+        if (this.main_menu) |m| m.node.frozen = false;
+        try this.layout_node.recalculateNodeGraphSize();
+    }
+
     fn submitMainMenu(this: *MenuManager, active: MainOptions) void {
         switch (active) {
             .Resume => this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err}),
@@ -856,6 +967,7 @@ pub const MenuManager = struct {
                 this.close() catch |err| std.debug.panicExtra(null, "menu close failute {any}", .{err});
             },
             .Mode => this.openMode() catch |err| std.debug.panicExtra(null, "mode open failure {any}", .{err}),
+            .Settings => this.openSettings() catch |err| std.debug.panicExtra(null, "settings open failure {any}", .{err}),
             .Exit => {
                 this.exit_ptr.* = true;
                 this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err});
@@ -876,6 +988,20 @@ pub const MenuManager = struct {
             },
             .Back => {
                 this.closeMode() catch |err| std.debug.panicExtra(null, "mode close failure {any}", .{err});
+            },
+        }
+    }
+
+    fn submitSettingsMenu(this: *MenuManager, active: SettingsOptions) void {
+        switch (active) {
+            .@"Keyboard Mode" => {
+                this.settings.keyboard_mode = !this.settings.keyboard_mode;
+            },
+            .@"Invert Scroll" => {
+                this.settings.invert_mouse_wheel = !this.settings.invert_mouse_wheel;
+            },
+            .Back => {
+                this.closeSettings() catch |err| std.debug.panicExtra(null, "settings close failure {any}", .{err});
             },
         }
     }
@@ -915,6 +1041,8 @@ pub fn main(init: std.process.Init) !void {
     var should_exit = false;
     var should_restart = false;
 
+    var settings: Settings = .{};
+
     var inspector = try Inspector.init(init.gpa, screen_width, screen_height);
     defer inspector.deinit();
 
@@ -926,7 +1054,7 @@ pub fn main(init: std.process.Init) !void {
     const root_node = try root.toNode(init.gpa);
     defer root_node.deinit();
     var target_mode: Board.Mode = .default;
-    const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart, &target_mode);
+    const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart, &target_mode, &settings);
     const menu_node = try menu.toNode();
     menu_node.space.offset.y = 30;
     try root_node.addChild(menu_node);
@@ -944,7 +1072,7 @@ pub fn main(init: std.process.Init) !void {
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, 60, &camera, target_mode);
+        var board = try Board.init(init.gpa, 60, &camera, target_mode, &settings);
         defer board.deinit();
         try board.setup(init.io);
         var last_cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
