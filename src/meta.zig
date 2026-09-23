@@ -15,6 +15,12 @@ pub fn FnErrorUnionCompound(comptime Error: type, comptime Ret: type) type {
     return Ret;
 }
 
+pub fn EnumCompound(comptime Enum: type, comptime extra: []const []const u8) type {
+    const len: comptime_int = @typeInfo(Enum).@"enum".fields.len +| extra.len -| 2;
+    const Tag = std.math.IntFittingRange(0, len);
+    return @Enum(Tag, .exhaustive, std.meta.fieldNames(Enum) ++ extra, &std.simd.iota(Tag, len +| 2));
+}
+
 /// Requires the enum backing value to start at 0 be sequential
 pub fn nextEnumValueWrap(value: anytype) @TypeOf(value) {
     const info = @typeInfo(@TypeOf(value)).@"enum";

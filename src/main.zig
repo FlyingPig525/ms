@@ -26,7 +26,7 @@ fn Cell(comptime T: type) type {
 }
 
 fn defaultDrawTextEx(text: [:0]const u8, position: rl.Vector2, font_size: f32, tint: rl.Color) void {
-    const font = rl.getFontDefault() catch @panic("Couldnt load default font");
+    const font = rl.getFontDefault() catch unreachable;
     rl.drawTextEx(font, text, position, font_size, @floatFromInt(font.glyphPadding), tint);
 }
 
@@ -147,8 +147,8 @@ const GridSpace = union(GridSpace.Type) {
             switch (this) {
                 .number => |num| {
                     var buf: [4]u8 = undefined;
-                    const txt = std.fmt.bufPrintZ(&buf, "{d}", .{num.value}) catch @panic("ruh roh");
-                    const font = rl.getFontDefault() catch @panic("no font");
+                    const txt = std.fmt.bufPrintZ(&buf, "{d}", .{num.value}) catch unreachable;
+                    const font = rl.getFontDefault() catch unreachable;
                     const dim = rl.measureTextEx(font, txt, 10, @floatFromInt(font.glyphPadding));
                     defaultDrawTextEx(txt, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
                     color = (rl.Color.black).alpha(0);
@@ -621,7 +621,7 @@ const Board = struct {
     }
 };
 
-fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*Manager, Enum) void) type {
+fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*Manager, Enum) void) type {
     if (@typeInfo(Enum) != .@"enum") @compileError("Enum must be an enum");
     const enum_info = @typeInfo(Enum).@"enum";
     const fields = enum_info.fields;
@@ -636,6 +636,8 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
         layout_node: *ui.Node,
         entries: [fields.len]*EntryNode,
         entry_nodes: [fields.len]*ui.Node,
+        // added back because it feels weird to not be able to select a different option with the mouse while another menu is open
+        accept_input: bool,
 
         pub const EntryNode = struct {
             gpa: std.mem.Allocator,
@@ -716,6 +718,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
             node.gpa = gpa;
             node.active = @enumFromInt(fields[0].value);
             node.manager = manager;
+            node.accept_input = true;
             node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
             node.layout_node = try node.layout.toNode();
             node.layout_node.space.offset.x = 12;
@@ -747,6 +750,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
 
         fn onInput(node: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Propagation {
             const this = node.mgr(This);
+            if (!this.accept_input) return .propagate;
             switch (key) {
                 .j => {
                     inline for (fields, 0..) |field, i| {
@@ -806,7 +810,7 @@ fn Menu(comptime Manager: type, comptime Enum: type, comptime func: *const fn (*
 }
 
 pub const MenuManager = struct {
-    const MainMenu = Menu(MenuManager, MainOptions, submitMainMenu);
+    const MainMenu = SelectionMenu(MenuManager, MainOptions, submitMainMenu);
     pub const MainOptions = enum {
         Resume,
         Restart,
@@ -814,14 +818,14 @@ pub const MenuManager = struct {
         Settings,
         Exit,
     };
-    const ModeMenu = Menu(MenuManager, ModeOptions, submitModeMenu);
+    const ModeMenu = SelectionMenu(MenuManager, ModeOptions, submitModeMenu);
     pub const ModeOptions = enum {
         Default,
         @"Flags Only",
         Back,
     };
     // TODO: add actual settings ui entries
-    const SettingsMenu = Menu(MenuManager, SettingsOptions, submitSettingsMenu);
+    const SettingsMenu = SelectionMenu(MenuManager, SettingsOptions, submitSettingsMenu);
     const SettingsOptions = enum {
         @"Keyboard Mode",
         @"Invert Scroll",
@@ -881,29 +885,31 @@ pub const MenuManager = struct {
 
     pub fn openMode(this: *MenuManager) !void {
         if (this.mode_menu != null) return;
-        if (this.main_menu == null) @panic("main menu null when mode menu is opening");
-        if (this.settings_menu != null) @panic("settings menu open when mode menu is opening");
+        if (this.main_menu == null) unreachable;
+        if (this.settings_menu != null) unreachable;
         this.mode_menu = try .init(try ModeMenu.init(this.gpa, this));
         try this.layout_node.addChild(this.mode_menu.?.node);
         try this.layout_node.recalculateNodeGraphSize();
-        this.main_menu.?.node.frozen = true;
+        this.main_menu.?.manager.accept_input = false;
+        //this.main_menu.?.node.frozen = true;
     }
 
     pub fn openSettings(this: *MenuManager) !void {
         if (this.settings_menu != null) return;
-        if (this.main_menu == null) @panic("main menu null when settings menu is opening");
-        if (this.mode_menu != null) @panic("mode menu open when settings menu is opening");
+        if (this.main_menu == null) unreachable;
+        if (this.mode_menu != null) unreachable;
         this.settings_menu = try .init(try SettingsMenu.init(this.gpa, this));
         try this.layout_node.addChild(this.settings_menu.?.node);
         try this.layout_node.recalculateNodeGraphSize();
-        this.main_menu.?.node.frozen = true;
+        this.main_menu.?.manager.accept_input = false;
+        //this.main_menu.?.node.frozen = true;
     }
 
     pub fn close(this: *MenuManager) !void {
         if (this.main_menu) |m| {
             if (m.node.parent) |p| {
                 try m.node.setId("llllldwijaiwa");
-                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+                if (!p.removeChildId("llllldwijaiwa")) unreachable;
             } else {
                 m.node.deinit();
             }
@@ -912,7 +918,7 @@ pub const MenuManager = struct {
         if (this.mode_menu) |m| {
             if (m.node.parent) |p| {
                 try m.node.setId("llllldwijaiwa");
-                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+                if (!p.removeChildId("llllldwijaiwa")) unreachable;
             } else {
                 m.node.deinit();
             }
@@ -921,7 +927,7 @@ pub const MenuManager = struct {
         if (this.settings_menu) |m| {
             if (m.node.parent) |p| {
                 try m.node.setId("llllldwijaiwa");
-                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+                if (!p.removeChildId("llllldwijaiwa")) unreachable;
             } else {
                 m.node.deinit();
             }
@@ -935,13 +941,13 @@ pub const MenuManager = struct {
         if (this.mode_menu) |m| {
             if (m.node.parent) |p| {
                 try m.node.setId("llllldwijaiwa");
-                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+                if (!p.removeChildId("llllldwijaiwa")) unreachable;
             } else {
                 m.node.deinit();
             }
             this.mode_menu = null;
         }
-        if (this.main_menu) |m| m.node.frozen = false;
+        this.main_menu.?.manager.accept_input = true;
         try this.layout_node.recalculateNodeGraphSize();
     }
 
@@ -949,22 +955,24 @@ pub const MenuManager = struct {
         if (this.settings_menu) |m| {
             if (m.node.parent) |p| {
                 try m.node.setId("llllldwijaiwa");
-                if (!p.removeChildId("llllldwijaiwa")) @panic("what");
+                if (!p.removeChildId("llllldwijaiwa")) unreachable;
             } else {
                 m.node.deinit();
             }
             this.settings_menu = null;
         }
-        if (this.main_menu) |m| m.node.frozen = false;
+        this.main_menu.?.manager.accept_input = true;
         try this.layout_node.recalculateNodeGraphSize();
     }
 
     fn submitMainMenu(this: *MenuManager, active: MainOptions) void {
+        if (this.settings_menu) |_| this.closeSettings() catch |err| std.debug.panicExtra(null, "settings close failure {any}", .{err});
+        if (this.mode_menu) |_| this.closeMode() catch |err| std.debug.panicExtra(null, "mode close failure {any}", .{err});
         switch (active) {
             .Resume => this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err}),
             .Restart => {
                 this.restart_ptr.* = true;
-                this.close() catch |err| std.debug.panicExtra(null, "menu close failute {any}", .{err});
+                this.close() catch |err| std.debug.panicExtra(null, "menu close failure {any}", .{err});
             },
             .Mode => this.openMode() catch |err| std.debug.panicExtra(null, "mode open failure {any}", .{err}),
             .Settings => this.openSettings() catch |err| std.debug.panicExtra(null, "settings open failure {any}", .{err}),
@@ -1064,11 +1072,6 @@ pub fn main(init: std.process.Init) !void {
     var keys_pressed: std.ArrayList(rl.KeyboardKey) = .empty;
     defer keys_pressed.deinit(init.gpa);
 
-    //    var menu_data = ui.Menu.init(&.{
-    //        try .init(init.gpa, "Resume", resumeFromMenu),
-    //        try .init(init.gpa, "Exit", exitFromMenu),
-    //    });
-    //    defer menu_data.deinit(init.gpa);
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
@@ -1120,6 +1123,8 @@ pub fn main(init: std.process.Init) !void {
                 try root_node.tick(rl.getFrameTime());
             }
             if ((should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+                rl.beginDrawing();
+                rl.endDrawing();
                 continue;
             }
             rl.beginDrawing();
