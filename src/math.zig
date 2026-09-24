@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn NumVec2(comptime T: type) type {
-    return struct {
+    return packed struct(@Int(.unsigned, @bitSizeOf(T) * 2)) {
         pub const Type = T;
         x: T,
         y: T,
@@ -46,6 +46,12 @@ pub fn NumVec2(comptime T: type) type {
         }
         pub fn lAdd(this: @This(), x: T, y: T) @This() {
             return .{ .x = this.x + x, .y = this.y + y };
+        }
+        pub fn minComp(this: @This(), other: @This()) @This() {
+            return .{ .x = @min(this.x, other.x), .y = @min(this.y, other.y) };
+        }
+        pub fn maxComp(this: @This(), other: @This()) @This() {
+            return .{ .x = @max(this.x, other.y), .y = @max(this.y, other.y) };
         }
 
         pub const zero: @This() = .{ .x = 0, .y = 0 };

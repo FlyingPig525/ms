@@ -244,10 +244,12 @@ const Settings = struct {
 const Board = struct {
     const chunk_size = 16;
 
-    pub const Scene = std.AutoArrayHashMapUnmanaged(IVec2, Chunk);
+    pub const Scene = std.array_hash_map.Auto(IVec2, Chunk);
     pub const Chunk = TwoDimensionalList(GridSpace);
+    io: std.Io,
+    seed: i64,
     scene: Scene,
-    chunk_bomb_count: u8,
+    chunk_bomb_rate: f32,
     arena: std.heap.ArenaAllocator,
     cursor_pos: IVec2 = .{ .x = 0, .y = 0 },
     camera: *Camera,
@@ -255,16 +257,19 @@ const Board = struct {
     settings: *Settings,
     end_thyself: bool = false,
     dead: bool = false,
+    chunks_to_generate: std.ArrayList(IVec2) = .empty,
 
     pub const Mode = enum {
         default,
         flag_only,
     };
 
-    pub fn init(gpa: std.mem.Allocator, chunk_bomb_count: u8, camera: *Camera, mode: Mode, settings: *Settings) !Board {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, chunk_bomb_rate: f32, camera: *Camera, mode: Mode, settings: *Settings) !Board {
         return .{
+            .io = io,
+            .seed = std.Io.Timestamp.now(io, .real).toMilliseconds(),
             .scene = .empty,
-            .chunk_bomb_count = chunk_bomb_count,
+            .chunk_bomb_rate = chunk_bomb_rate,
             .arena = .init(gpa),
             .camera = camera,
             .mode = mode,
@@ -278,6 +283,12 @@ const Board = struct {
 
     const min_camera_zoom = 1.8719;
     pub fn tick(this: *Board, dt: f32) !void {
+        const gpa = this.arena.allocator();
+        for (this.chunks_to_generate.items) |vec| {
+            if (!this.scene.contains(vec)) {
+                try this.scene.put(gpa, vec, try this.generateChunk(vec));
+            }
+        }
         if (this.settings.keyboard_mode) {
             if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
                 this.cursor_pos.x -= 1;
@@ -320,11 +331,9 @@ const Board = struct {
                 this.camera.shift(0, 200 * dt);
             }
 
+            const cursor = this.mouseToCell();
             if (rl.isMouseButtonPressed(.right)) {
-                const cursor_screen = rl.getMousePosition();
-                const cursor = rl.getScreenToWorld2D(cursor_screen, this.camera.camera).divide(.init(20, 20));
-                const cell = IVec2{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
-                try this.flag(cell);
+                try this.flag(cursor);
             }
             if (rl.isMouseButtonPressed(.left)) blk: {
                 if (this.dead) {
@@ -332,10 +341,7 @@ const Board = struct {
                     break :blk;
                 }
 
-                const cursor_screen = rl.getMousePosition();
-                const cursor = rl.getScreenToWorld2D(cursor_screen, this.camera.camera).divide(.init(20, 20));
-                const cell = IVec2{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
-                try this.reveal(cell);
+                try this.reveal(cursor);
             }
             const mul_vec: rl.Vector2 = if (this.settings.invert_mouse_wheel) .init(-2, -2) else .init(2, 2);
             const wheel = rl.getMouseWheelMoveV().multiply(mul_vec);
@@ -398,56 +404,70 @@ const Board = struct {
         }
     }
 
-    pub fn setup(this: *Board, io: std.Io) !void {
-        var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Timestamp.now(io, .real).toMilliseconds()));
-        const random = prng.random();
+    pub fn getPositionSeed(this: *Board, pos: IVec2) u64 {
+        return @bitCast(this.seed +% @as(i64, @bitCast(pos)));
+    }
 
-        var chunk_x: i32 = -5;
-        while (chunk_x < 5) : (chunk_x += 1) {
-            var chunk_y: i32 = -5;
-            while (chunk_y < 5) : (chunk_y += 1) {
-                var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
-                defer this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
-                if (this.mode == .flag_only and chunk_x == 0 and chunk_y == 0) continue;
-                for (0..this.chunk_bomb_count) |_| {
-                    var found = false;
-                    // blk just because i wanted to
-                    blk: while (!found) {
-                        const x = random.intRangeAtMost(usize, 0, chunk.list.len - 1);
-                        if (x == 0) continue :blk;
-                        if (chunk.list[x] != .empty_cell) {
-                            continue :blk;
-                        }
-                        chunk.list[x] = .{
-                            .mine = .{ .hidden = true },
-                        };
-                        found = true;
+    pub fn getPositionBomb(this: *Board, pos: IVec2) bool {
+        var prng = std.Random.DefaultPrng.init(this.getPositionSeed(pos));
+        return prng.random().float(f32) < this.chunk_bomb_rate;
+    }
+
+    fn generateChunk(this: *Board, pos: IVec2) !Chunk {
+        var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
+        const sized = pos.multValue(chunk_size);
+        {
+            var x: i32 = 0;
+            while (x < chunk_size) : (x += 1) {
+                var y: i32 = 0;
+                while (y < chunk_size) : (y += 1) {
+                    const off = sized.lAdd(x, y);
+                    if (off.lEql(0, 0)) continue;
+                    if (this.getPositionBomb(off)) {
+                        chunk.silentSet(x, y, .{ .mine = .{} });
                     }
                 }
             }
         }
-        chunk_x = -5;
-        while (chunk_x < 5) : (chunk_x += 1) {
-            var chunk_y: i32 = -5;
-            while (chunk_y < 5) : (chunk_y += 1) {
-                const vec: IVec2 = .{ .x = chunk_x, .y = chunk_y };
-                const chunk = this.scene.get(vec) orelse continue;
-                var x: i32 = 0;
-                while (x < chunk_size) : (x += 1) {
-                    var y: i32 = 0;
-                    while (y < chunk_size) : (y += 1) {
-                        const cell = try chunk.get(x, y);
-                        if (cell == .empty_cell) {
-                            const abs = vec.multValue(chunk_size).add(.{ .x = x, .y = y });
-                            const Int = math.OperableNumber(u8);
-                            var cnt: Int = .{ .value = 0 };
-                            this.repeatAdjacentNoInfoOnType(abs.x, abs.y, .mine, Int.add, .{ &cnt, 1 });
-                            if (cnt.value > 0) {
-                                chunk.silentSet(@intCast(x), @intCast(y), .{ .number = .{ .value = cnt.value, .hidden = true } });
+        var x: i32 = 0;
+        while (x < chunk_size) : (x += 1) {
+            var y: i32 = 0;
+            while (y < chunk_size) : (y += 1) {
+                const cell = try chunk.get(x, y);
+                if (cell == .empty_cell) {
+                    var x_off: i32 = -1;
+                    var count: u8 = 0;
+                    while (x_off <= 1) : (x_off += 1) {
+                        var y_off: i32 = -1;
+                        while (y_off <= 1) : (y_off += 1) {
+                            const xP = x + x_off;
+                            const yP = y + y_off;
+                            if (this.getPositionBomb(sized.lAdd(xP, yP))) {
+                                count += 1;
                             }
                         }
                     }
+                    if (count > 0) {
+                        chunk.silentSet(x, y, .{ .number = .{ .value = count } });
+                    }
                 }
+            }
+        }
+        return chunk;
+    }
+
+    pub fn setup(this: *Board) !void {
+        var chunk_x: i32 = -5;
+        while (chunk_x < 5) : (chunk_x += 1) {
+            var chunk_y: i32 = -5;
+            while (chunk_y < 5) : (chunk_y += 1) {
+                if (this.mode == .flag_only and chunk_x == 0 and chunk_y == 0) {
+                    const chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
+                    this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
+                    continue;
+                }
+                const chunk = try this.generateChunk(.{ .x = chunk_x, .y = chunk_y });
+                this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
             }
         }
     }
@@ -458,7 +478,22 @@ const Board = struct {
         return .{ .x = @floor(cursor.x), .y = @floor(cursor.y) };
     }
 
+    fn checkAndQueueAdjacentChunks(this: *Board, chunk: IVec2) !void {
+        var off_x: i32 = -1;
+            while (off_x <= 1) : (off_x += 1) {
+                var off_y: i32 = -1;
+                while (off_y <= 1) : (off_y += 1) {
+                    const chk = chunk.lAdd(off_x, off_y);
+                    if (!this.scene.contains(chk)) {
+                        try this.chunks_to_generate.append(this.arena.allocator(), chk);
+                    }
+                }
+            }
+
+    }
+
     pub fn draw(this: *Board) !void {
+        const cursor = if (this.settings.keyboard_mode) this.cursor_pos else this.mouseToCell();
         {
             rl.beginMode2D(this.camera.camera);
             defer rl.endMode2D();
@@ -466,7 +501,6 @@ const Board = struct {
             const tl_vec = IVec2{ .x = @floor(tl_pos.x / 20), .y = @floor(tl_pos.y / 20) };
             const br_pos = rl.getScreenToWorld2D(.init(@floatFromInt(rl.getScreenWidth()), @floatFromInt(rl.getScreenHeight())), this.camera.camera);
             const br_vec = IVec2{ .x = @floor(br_pos.x / 20), .y = @floor(br_pos.y / 20) };
-            const cursor = if (this.settings.keyboard_mode) this.cursor_pos else this.mouseToCell();
             var x = tl_vec.x;
             while (x <= br_vec.x) : (x += 1) {
                 var y = tl_vec.y;
@@ -475,11 +509,17 @@ const Board = struct {
                     cell.draw(.{ .x = x, .y = y, .width = 20, .height = 20, .hovering = cursor.lEql(x, y) });
                 }
             }
+            const tl_chunk = tl_vec.floorDivValue(chunk_size);
+            const br_chunk = br_vec.floorDivValue(chunk_size);
+            try this.checkAndQueueAdjacentChunks(tl_chunk);
+            try this.checkAndQueueAdjacentChunks(tl_chunk.minComp(br_chunk));
+            try this.checkAndQueueAdjacentChunks(tl_chunk.maxComp(br_chunk));
+            try this.checkAndQueueAdjacentChunks(br_chunk);
         }
-        var buf: [20]u8 = undefined;
-        const txt = try std.fmt.bufPrintZ(&buf, "Cursor: {d} {d}", .{ this.cursor_pos.x, this.cursor_pos.y });
+        var buf: [64]u8 = undefined;
+        const txt = try std.fmt.bufPrintZ(&buf, "Cursor: {d} {d}", .{ cursor.x, cursor.y });
         rl.drawText(txt, 0, 30, 24, .white);
-        const chunk_pos = this.cursor_pos.floorDivValue(chunk_size);
+        const chunk_pos = cursor.floorDivValue(chunk_size);
         const chunk_text = try std.fmt.bufPrintZ(&buf, "Chunk: {d} {d}", .{ chunk_pos.x, chunk_pos.y });
         rl.drawText(chunk_text, 0, 50, 24, .white);
         if (this.dead) {
@@ -1075,9 +1115,9 @@ pub fn main(init: std.process.Init) !void {
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, 60, &camera, target_mode, &settings);
+        var board = try Board.init(init.gpa, init.io, 0.2, &camera, target_mode, &settings);
         defer board.deinit();
-        try board.setup(init.io);
+        //try board.setup();
         var last_cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
             const dt = rl.getFrameTime();
@@ -1123,6 +1163,8 @@ pub fn main(init: std.process.Init) !void {
                 try root_node.tick(rl.getFrameTime());
             }
             if ((should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+                // this is here because it stalls for a frame after endDrawing, so if you use mouse controls you wont immediately
+                // click whatever your mouse is hovering over
                 rl.beginDrawing();
                 rl.endDrawing();
                 continue;
