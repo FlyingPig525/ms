@@ -67,7 +67,7 @@ const GridSpace = union(GridSpace.Type) {
         return std.meta.activeTag(this.*);
     }
 
-    pub fn fullFlagReveal(this: *GridSpace, info: Board.AdjacentInformation) !bool {
+    pub fn fullFlagReveal(this: *GridSpace, info: Board.AdjacentInformation, caller: IVec2) !bool {
         if (this.hidden()) return false;
         if (this.* == .number) {
             const value = this.number.value;
@@ -91,6 +91,8 @@ const GridSpace = union(GridSpace.Type) {
                 while (x <= 1) : (x += 1) {
                     var y: i32 = -1;
                     while (y <= 1) : (y += 1) {
+                        if (x == 0 and y == 0) continue;
+                        if (info.x + x == caller.x and info.y + y == caller.y) continue;
                         if (info.list.getPtr(info.x + x, info.y + y)) |cell| blk: {
                             if (cell.flagged()) break :blk;
                             const t = try cell.reveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list });
@@ -102,9 +104,10 @@ const GridSpace = union(GridSpace.Type) {
                 while (x <= 1) : (x += 1) {
                     var y: i32 = -1;
                     while (y <= 1) : (y += 1) {
+                        if (x == 0 and y == 0) continue;
                         if (info.list.getPtr(info.x + x, info.y + y)) |cell| {
                             if (cell.* == .number) {
-                                if (try cell.fullFlagReveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list })) return true;
+                                if (try cell.fullFlagReveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list }, .{ .x = info.x, .y = info.y })) return true;
                             }
                         }
                     }
@@ -151,7 +154,7 @@ const GridSpace = union(GridSpace.Type) {
                     const font = rl.getFontDefault() catch unreachable;
                     const dim = rl.measureTextEx(font, txt, 10, @floatFromInt(font.glyphPadding));
                     defaultDrawTextEx(txt, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
-                    color = (rl.Color.black).alpha(0);
+                    color = .blank;
                 },
                 .mine => {
                     //                    rl.drawRectangleRec(rect, .red);
@@ -281,14 +284,15 @@ const Board = struct {
         this.arena.deinit();
     }
 
-    const min_camera_zoom = 1.8719;
+    const default_camera_zoom = 1.8719;
     pub fn tick(this: *Board, dt: f32) !void {
         const gpa = this.arena.allocator();
         for (this.chunks_to_generate.items) |vec| {
             if (!this.scene.contains(vec)) {
-                try this.scene.put(gpa, vec, try this.generateChunk(vec));
+                try this.scene.put(gpa, vec, try this.generateChunk(vec, this.chunk_bomb_rate));
             }
         }
+        this.chunks_to_generate.clearAndFree(this.arena.allocator());
         if (this.settings.keyboard_mode) {
             if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
                 this.cursor_pos.x -= 1;
@@ -351,27 +355,27 @@ const Board = struct {
             // TODO: when raylib can do trackpad pinching, add that
         }
         if (rl.isKeyDown(.e)) {
-            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom + (this.camera.camera.zoom * 3 * dt), min_camera_zoom, 100);
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom + (this.camera.camera.zoom * 3 * dt), default_camera_zoom - 1.5, 100);
         }
         if (rl.isKeyDown(.q)) {
-            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom - (this.camera.camera.zoom * 3 * dt), min_camera_zoom, 100);
+            this.camera.camera.zoom = rl.math.clamp(this.camera.camera.zoom - (this.camera.camera.zoom * 3 * dt), default_camera_zoom - 1.5, 100);
         }
         if (rl.isKeyPressed(.r)) {
-            this.camera.camera.zoom = min_camera_zoom;
+            this.camera.camera.zoom = default_camera_zoom;
         }
 
         this.camera.tick();
     }
 
     fn reveal(this: *Board, pos: IVec2) !void {
-        if (this.mode == .flag_only and !pos.eql(.{ .x = 1, .y = 1 })) return;
+        if (this.mode == .flag_only and !pos.eql(.zero)) return;
         const ptr = this.getPtr(pos.x, pos.y) orelse {
             std.log.err("null cell {d} {d}\n", .{ pos.x, pos.y });
             return;
         };
         if (ptr.flagged()) return;
         if (!ptr.hidden() and ptr.* == .number and this.mode != .flag_only) {
-            if (try ptr.fullFlagReveal(.{ .x = pos.x, .y = pos.y, .list = this })) {
+            if (try ptr.fullFlagReveal(.{ .x = pos.x, .y = pos.y, .list = this }, pos)) {
                 this.dead = true;
             }
         } else {
@@ -395,7 +399,7 @@ const Board = struct {
                 var y: i32 = -1;
                 while (y <= 1) : (y += 1) {
                     const cell = this.getPtr(pos.x + x, pos.y + y) orelse continue;
-                    if (try cell.fullFlagReveal(.{ .x = pos.x + x, .y = pos.y + y, .list = this })) {
+                    if (try cell.fullFlagReveal(.{ .x = pos.x + x, .y = pos.y + y, .list = this }, pos.lAdd(x, y))) {
                         this.dead = true;
                         break :loop;
                     }
@@ -408,12 +412,12 @@ const Board = struct {
         return @bitCast(this.seed +% @as(i64, @bitCast(pos)));
     }
 
-    pub fn getPositionBomb(this: *Board, pos: IVec2) bool {
+    pub fn getPositionBomb(this: *Board, pos: IVec2, bomb_rate: f32) bool {
         var prng = std.Random.DefaultPrng.init(this.getPositionSeed(pos));
-        return prng.random().float(f32) < this.chunk_bomb_rate;
+        return prng.random().float(f32) < bomb_rate;
     }
 
-    fn generateChunk(this: *Board, pos: IVec2) !Chunk {
+    fn generateChunk(this: *Board, pos: IVec2, bomb_rate: f32) !Chunk {
         var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
         const sized = pos.multValue(chunk_size);
         {
@@ -423,7 +427,7 @@ const Board = struct {
                 while (y < chunk_size) : (y += 1) {
                     const off = sized.lAdd(x, y);
                     if (off.lEql(0, 0)) continue;
-                    if (this.getPositionBomb(off)) {
+                    if (this.getPositionBomb(off, bomb_rate)) {
                         chunk.silentSet(x, y, .{ .mine = .{} });
                     }
                 }
@@ -442,7 +446,9 @@ const Board = struct {
                         while (y_off <= 1) : (y_off += 1) {
                             const xP = x + x_off;
                             const yP = y + y_off;
-                            if (this.getPositionBomb(sized.lAdd(xP, yP))) {
+                            const posP = IVec2{ .x = xP, .y = yP };
+                            const rate = if (posP.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else this.chunk_bomb_rate;
+                            if (this.getPositionBomb(sized.lAdd(xP, yP), rate)) {
                                 count += 1;
                             }
                         }
@@ -461,12 +467,8 @@ const Board = struct {
         while (chunk_x < 5) : (chunk_x += 1) {
             var chunk_y: i32 = -5;
             while (chunk_y < 5) : (chunk_y += 1) {
-                if (this.mode == .flag_only and chunk_x == 0 and chunk_y == 0) {
-                    const chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
-                    this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
-                    continue;
-                }
-                const chunk = try this.generateChunk(.{ .x = chunk_x, .y = chunk_y });
+                const is_flag = this.mode == .flag_only and chunk_x == 0 and chunk_y == 0;
+                const chunk = try this.generateChunk(.{ .x = chunk_x, .y = chunk_y }, if (is_flag) -1 else this.chunk_bomb_rate);
                 this.scene.put(this.arena.allocator(), .{ .x = chunk_x, .y = chunk_y }, chunk) catch @panic("put failed");
             }
         }
@@ -480,16 +482,15 @@ const Board = struct {
 
     fn checkAndQueueAdjacentChunks(this: *Board, chunk: IVec2) !void {
         var off_x: i32 = -1;
-            while (off_x <= 1) : (off_x += 1) {
-                var off_y: i32 = -1;
-                while (off_y <= 1) : (off_y += 1) {
-                    const chk = chunk.lAdd(off_x, off_y);
-                    if (!this.scene.contains(chk)) {
-                        try this.chunks_to_generate.append(this.arena.allocator(), chk);
-                    }
+        while (off_x <= 1) : (off_x += 1) {
+            var off_y: i32 = -1;
+            while (off_y <= 1) : (off_y += 1) {
+                const chk = chunk.lAdd(off_x, off_y);
+                if (!this.scene.contains(chk)) {
+                    try this.chunks_to_generate.append(this.arena.allocator(), chk);
                 }
             }
-
+        }
     }
 
     pub fn draw(this: *Board) !void {
@@ -1117,7 +1118,7 @@ pub fn main(init: std.process.Init) !void {
         camera.move(10, 10);
         var board = try Board.init(init.gpa, init.io, 0.2, &camera, target_mode, &settings);
         defer board.deinit();
-        //try board.setup();
+        try board.setup();
         var last_cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
             const dt = rl.getFrameTime();

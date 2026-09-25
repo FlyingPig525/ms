@@ -109,6 +109,12 @@ pub fn TwoDimensionalList(comptime T: type) type {
             this.list[@intCast((y * this.width) + x)] = item;
         }
 
+        pub fn clone(this: @This(), gpa: std.mem.Allocator) !@This() {
+            const list = try init(gpa, this.width, this.height);
+            @memcpy(list.list, this.list);
+            return list;
+        }
+
         const List = @This();
         const AdjacentInformation = struct {
             list: *List,

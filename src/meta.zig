@@ -21,18 +21,18 @@ pub fn EnumCompound(comptime Enum: type, comptime extra: []const []const u8) typ
     return @Enum(Tag, .exhaustive, std.meta.fieldNames(Enum) ++ extra, &std.simd.iota(Tag, len +| 2));
 }
 
-/// Requires the enum backing value to start at 0 be sequential
+/// Requires the enum backing value to be sequential
 pub fn nextEnumValueWrap(value: anytype) @TypeOf(value) {
     const info = @typeInfo(@TypeOf(value)).@"enum";
     const idx = @intFromEnum(value);
-    if (idx + 1 >= info.fields.len) return @enumFromInt(0);
+    if (idx + 1 >= info.fields.len) return @enumFromInt(info.fields[0].value);
     return @enumFromInt(idx + 1);
 }
 
-/// Requires the enum backing value to start at 0 be sequential
+/// Requires the enum backing value to be sequential
 pub fn prevEnumValueWrap(value: anytype) @TypeOf(value) {
     const info = @typeInfo(@TypeOf(value)).@"enum";
     const idx = @intFromEnum(value);
-    if (idx == 0) return @enumFromInt(info.fields.len - 1);
+    if (idx == 0) return @enumFromInt(info.fields[info.fields.len - 1].value);
     return @enumFromInt(idx - 1);
 }
