@@ -3,9 +3,11 @@ const rl = @import("raylib");
 const math = @import("math.zig");
 const meta = @import("meta.zig");
 const ui = @import("ui.zig");
+const fast = @import("fastnoise.zig");
 const Inspector = @import("Inspector.zig");
 const TwoDimensionalList = @import("two_dimensional_list.zig").TwoDimensionalList;
 const IVec2 = math.IVec2;
+const ArrayIterator = @import("array_iterator.zig").ArrayIterator;
 
 const primary_color: i32 = 0x47bf98ff;
 const secondary_color: i32 = 0x214e45ff;
@@ -16,11 +18,13 @@ fn Cell(comptime T: type) type {
         return struct {
             hidden: bool = true,
             flagged: bool = false,
+            biome: Biome,
         };
     }
     return struct {
         hidden: bool = true,
         flagged: bool = false,
+        biome: Biome,
         value: T,
     };
 }
@@ -62,9 +66,32 @@ const GridSpace = union(GridSpace.Type) {
             },
         }
         if (this.* == .empty_cell) {
-            try info.list.repeatAdjacent(info.x, info.y, reveal, .{ undefined, undefined });
+            var n = this.neighbors();
+            while (n.next()) |vec| {
+                const abs = vec.lAdd(info.x, info.y);
+                if (info.list.getPtr(abs.x, abs.y)) |cell| {
+                    _ = try cell.reveal(.{ .x = abs.x, .y = abs.y, .list = info.list });
+                }
+            }
         }
         return std.meta.activeTag(this.*);
+    }
+
+    pub fn colors(this: GridSpace) CellColors {
+        return this.biome().colors();
+    }
+
+    pub const Neighbors = ArrayIterator(IVec2, 5 * 5);
+    pub fn neighbors(this: GridSpace) Neighbors {
+        return this.biome().neighbors();
+    }
+
+    pub fn biome(this: GridSpace) Biome {
+        switch (this) {
+            inline else => |a| {
+                return a.biome;
+            },
+        }
     }
 
     pub fn fullFlagReveal(this: *GridSpace, info: Board.AdjacentInformation, caller: IVec2) !bool {
@@ -73,42 +100,34 @@ const GridSpace = union(GridSpace.Type) {
             const value = this.number.value;
             var flagged_cells: u8 = 0;
             var hidden_cells: u8 = 0;
-            {
-                comptime var x = -1;
-                inline while (x <= 1) : (x += 1) {
-                    comptime var y = -1;
-                    inline while (y <= 1) : (y += 1) {
-                        if (info.list.get(info.x + x, info.y + y)) |cell| {
-                            if (cell.flagged()) flagged_cells += 1;
-                            if (cell.hidden()) hidden_cells += 1;
-                        }
-                    }
+            var n = this.neighbors();
+            while (n.next()) |vec| {
+                const abs = vec.lAdd(info.x, info.y);
+                if (info.list.get(abs.x, abs.y)) |cell| {
+                    if (cell.flagged()) flagged_cells += 1;
+                    if (cell.hidden()) hidden_cells += 1;
                 }
             }
             if (hidden_cells == flagged_cells) return false;
             if (flagged_cells >= value) {
-                var x: i32 = -1;
-                while (x <= 1) : (x += 1) {
-                    var y: i32 = -1;
-                    while (y <= 1) : (y += 1) {
-                        if (x == 0 and y == 0) continue;
-                        if (info.x + x == caller.x and info.y + y == caller.y) continue;
-                        if (info.list.getPtr(info.x + x, info.y + y)) |cell| blk: {
-                            if (cell.flagged()) break :blk;
-                            const t = try cell.reveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list });
-                            if (t == .mine) return true;
-                        }
+                n.reset();
+                while (n.next()) |vec| {
+                    if (vec.eql(.zero)) continue;
+                    const abs = vec.lAdd(info.x, info.y);
+                    if (abs.eql(caller)) continue;
+                    if (info.list.getPtr(abs.x, abs.y)) |cell| blk: {
+                        if (cell.flagged()) break :blk;
+                        const t = try cell.reveal(.{ .x = abs.x, .y = abs.y, .list = info.list });
+                        if (t == .mine) return true;
                     }
                 }
-                x = -1;
-                while (x <= 1) : (x += 1) {
-                    var y: i32 = -1;
-                    while (y <= 1) : (y += 1) {
-                        if (x == 0 and y == 0) continue;
-                        if (info.list.getPtr(info.x + x, info.y + y)) |cell| {
-                            if (cell.* == .number) {
-                                if (try cell.fullFlagReveal(.{ .x = info.x + x, .y = info.y + y, .list = info.list }, .{ .x = info.x, .y = info.y })) return true;
-                            }
+                n.reset();
+                while (n.next()) |vec| {
+                    if (vec.eql(.zero)) continue;
+                    const abs = vec.lAdd(info.x, info.y);
+                    if (info.list.getPtr(abs.x, abs.y)) |cell| {
+                        if (cell.* == .number) {
+                            if (try cell.fullFlagReveal(.{ .x = abs.x, .y = abs.y, .list = info.list }, .{ .x = info.x, .y = info.y })) return true;
                         }
                     }
                 }
@@ -143,8 +162,9 @@ const GridSpace = union(GridSpace.Type) {
             .width = opt.width,
             .height = opt.height,
         };
-        var color: rl.Color = .fromInt(tertiary_color);
-        rl.drawRectangleRec(rect, .fromInt(tertiary_color));
+        const c = this.colors();
+        var color: rl.Color = c.background;
+        rl.drawRectangleRec(rect, c.background);
 
         if (!this.hidden()) {
             switch (this) {
@@ -166,7 +186,7 @@ const GridSpace = union(GridSpace.Type) {
             if (this.flagged()) {
                 color = .dark_gray;
             } else {
-                color = .fromInt(primary_color);
+                color = c.foreground;
             }
             //            rl.drawRectangleRec(rect, .fromInt(primary_color));
         }
@@ -258,6 +278,7 @@ const Board = struct {
     camera: *Camera,
     mode: Mode,
     settings: *Settings,
+    noise: fast.Noise(f32),
     end_thyself: bool = false,
     dead: bool = false,
     chunks_to_generate: std.ArrayList(IVec2) = .empty,
@@ -268,15 +289,24 @@ const Board = struct {
     };
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, chunk_bomb_rate: f32, camera: *Camera, mode: Mode, settings: *Settings) !Board {
+        const seed = std.Io.Timestamp.now(io, .real).toMilliseconds();
         return .{
             .io = io,
-            .seed = std.Io.Timestamp.now(io, .real).toMilliseconds(),
+            .seed = seed,
             .scene = .empty,
             .chunk_bomb_rate = chunk_bomb_rate,
             .arena = .init(gpa),
             .camera = camera,
             .mode = mode,
             .settings = settings,
+            .noise = .{
+                .frequency = 0.05,
+                .noise_type = .cellular,
+                .cellular_distance = .manhattan,
+                .cellular_return = .cell_value,
+                .cellular_jitter_mod = 1.0,
+                .seed = @truncate(seed),
+            },
         };
     }
 
@@ -418,7 +448,7 @@ const Board = struct {
     }
 
     fn generateChunk(this: *Board, pos: IVec2, bomb_rate: f32) !Chunk {
-        var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{} });
+        var chunk = try Chunk.initValued(this.arena.allocator(), chunk_size, chunk_size, .{ .empty_cell = .{ .biome = undefined } });
         const sized = pos.multValue(chunk_size);
         {
             var x: i32 = 0;
@@ -426,9 +456,18 @@ const Board = struct {
                 var y: i32 = 0;
                 while (y < chunk_size) : (y += 1) {
                     const off = sized.lAdd(x, y);
+                    const n = this.noise.genNoise2D(@floatFromInt(off.x), @floatFromInt(off.y));
+                    const biome = Biome.fromValue(n);
+                    defer {
+                        switch ((chunk.getPtr(x, y) catch unreachable).*) {
+                            inline else => |*a| {
+                                a.biome = biome;
+                            },
+                        }
+                    }
                     if (off.lEql(0, 0)) continue;
                     if (this.getPositionBomb(off, bomb_rate)) {
-                        chunk.silentSet(x, y, .{ .mine = .{} });
+                        chunk.silentSet(x, y, .{ .mine = .{ .biome = biome } });
                     }
                 }
             }
@@ -439,22 +478,17 @@ const Board = struct {
             while (y < chunk_size) : (y += 1) {
                 const cell = try chunk.get(x, y);
                 if (cell == .empty_cell) {
-                    var x_off: i32 = -1;
                     var count: u8 = 0;
-                    while (x_off <= 1) : (x_off += 1) {
-                        var y_off: i32 = -1;
-                        while (y_off <= 1) : (y_off += 1) {
-                            const xP = x + x_off;
-                            const yP = y + y_off;
-                            const posP = IVec2{ .x = xP, .y = yP };
-                            const rate = if (posP.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else this.chunk_bomb_rate;
-                            if (this.getPositionBomb(sized.lAdd(xP, yP), rate)) {
-                                count += 1;
-                            }
+                    var n = cell.neighbors();
+                    while (n.next()) |vec| {
+                        const abs = vec.lAdd(x, y);
+                        const rate = if (abs.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else this.chunk_bomb_rate;
+                        if (this.getPositionBomb(sized.add(abs), rate)) {
+                            count += 1;
                         }
                     }
                     if (count > 0) {
-                        chunk.silentSet(x, y, .{ .number = .{ .value = count } });
+                        chunk.silentSet(x, y, .{ .number = .{ .value = count, .biome = cell.biome() } });
                     }
                 }
             }
@@ -1072,7 +1106,169 @@ fn iterateKeysPressed() ?rl.KeyboardKey {
     return key;
 }
 
+const CellColors = struct {
+    foreground: rl.Color,
+    background: rl.Color,
+};
+
+const Biome = enum {
+    default,
+    high_rate,
+    two_bombs,
+    three_bombs,
+    cardinal,
+    diagonal,
+    five_by_five,
+
+    pub fn fromValue(value: f32) Biome {
+        return switch (@as(i8, @floor(value * 100))) {
+            21...100 => .default,
+            1...20 => .default,
+            -89...0 => .five_by_five,
+            //            1...20 => .high_rate,
+            //            -19...0 => .two_bombs,
+            //            -49...-20 => .three_bombs,
+            //            -69...-50 => .cardinal,
+            //            -89...-70 => .diagonal,
+            //            else => .five_by_five,
+            else => .five_by_five,
+        };
+    }
+
+    pub fn neighbors(b: Biome) GridSpace.Neighbors {
+        switch (b) {
+            .default => {
+                comptime var arr: [3 * 3 - 1]IVec2 = undefined;
+                comptime {
+                    var i = 0;
+                    var x = -1;
+                    while (x <= 1) : (x += 1) {
+                        var y = -1;
+                        while (y <= 1) : (y += 1) {
+                            if (x == 0 and y == 0) continue;
+                            arr[i] = .{ .x = x, .y = y };
+                            i += 1;
+                        }
+                    }
+                }
+                return comptime .init(&arr);
+            },
+            .five_by_five => {
+                comptime var arr: [5 * 5 - 1]IVec2 = undefined;
+                comptime {
+                    var i = 0;
+                    var x = -2;
+                    while (x <= 2) : (x += 1) {
+                        var y = -2;
+                        while (y <= 2) : (y += 1) {
+                            if (x == 0 and y == 0) continue;
+                            arr[i] = .{ .x = x, .y = y };
+                            i += 1;
+                        }
+                    }
+                }
+                return comptime .init(&arr);
+            },
+            else => return .init(&.{}),
+        }
+    }
+
+    pub fn colors(b: Biome) CellColors {
+        switch (b) {
+            .default => return .{ .background = .fromInt(tertiary_color), .foreground = .fromInt(primary_color) },
+            .five_by_five => return .{ .background = .dark_green, .foreground = .green },
+            else => return .{ .background = .fromInt(tertiary_color), .foreground = .fromInt(primary_color) },
+        }
+    }
+};
+
+pub fn bMain(init: std.process.Init) !void {
+    const seed: i32 = @truncate(std.Io.Timestamp.now(init.io, .real).toMilliseconds());
+    const n = fast.Noise(f32){
+        .frequency = 0.001,
+        .noise_type = .cellular,
+        .cellular_distance = .manhattan,
+        .cellular_return = .cell_value,
+        .cellular_jitter_mod = 1.0,
+        .seed = seed,
+    };
+    const screen_width = 1080;
+    const screen_height = 720;
+    rl.initWindow(screen_width, screen_height, "noise");
+    defer rl.closeWindow();
+    rl.setTargetFPS(60);
+
+    const tex = try rl.RenderTexture2D.init(3 * screen_width, 3 * screen_height);
+    std.log.debug("{d}", .{n.genNoise2D(0, 0)});
+    defer tex.unload();
+    tex.begin();
+    rl.clearBackground(.black);
+    for (0..(20 * screen_width) / 20) |x| {
+        for (0..(20 * screen_height) / 20) |y| {
+            const value = n.genNoise2D(@floatFromInt(x * 20), @floatFromInt(y * 20));
+            const color: rl.Color = switch (@as(i8, @floor(value * 100))) {
+                21...100 => .white,
+                1...20 => .red,
+                -19...0 => .blue,
+                -49...-20 => .green,
+                -69...-50 => .pink,
+                -89...-70 => .purple,
+                else => .black,
+            };
+            rl.drawRectangle(@intCast(x * 20), @intCast(y * 20), 20, 20, color);
+        }
+    }
+    tex.end();
+
+    std.log.debug("{d}", .{n.genNoise2D(0, 0)});
+    var camera = rl.Camera2D{
+        .offset = .init(screen_width / 2, screen_height / 2),
+        .rotation = 0,
+        .target = .zero(),
+        .zoom = 1,
+    };
+    while (!rl.windowShouldClose()) {
+        const dt = rl.getFrameTime();
+        if (rl.isKeyDown(.q)) {
+            camera.zoom -= 0.05;
+        }
+        if (rl.isKeyDown(.e)) {
+            camera.zoom += 0.05;
+        }
+        if (rl.isKeyDown(.a)) {
+            camera.target.x += -200 * dt;
+        }
+        if (rl.isKeyDown(.d)) {
+            camera.target.x += 200 * dt;
+        }
+        if (rl.isKeyDown(.w)) {
+            camera.target.y += -200 * dt;
+        }
+        if (rl.isKeyDown(.s)) {
+            camera.target.y += 200 * dt;
+        }
+
+        const c = rl.getMousePosition();
+        const x = rl.getMouseX();
+        const y = rl.getMouseY();
+        const v = n.genNoise2D(@floatFromInt(x), @floatFromInt(y));
+        const fmt = try std.fmt.allocPrintSentinel(init.gpa, "{d}", .{v}, 0);
+        defer init.gpa.free(fmt);
+        rl.beginDrawing();
+        camera.begin();
+        rl.clearBackground(.black);
+        rl.drawTexturePro(tex.texture, .init(0, 0, 3 * screen_width, -3 * screen_height), .init(0, 0, 3 * screen_width, 3 * screen_height), .init(0, 0), 0, .white);
+        rl.drawRectangleRec(.init(c.x, c.y, 3, -3), .green);
+        camera.end();
+        rl.drawText(fmt, 0, 40, 24, .green);
+        rl.drawFPS(0, 0);
+        rl.endDrawing();
+    }
+}
 pub fn main(init: std.process.Init) !void {
+    try aMain(init);
+}
+pub fn aMain(init: std.process.Init) !void {
     const screen_width = 1080;
     const screen_height = 720;
 
