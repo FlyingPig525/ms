@@ -6,7 +6,7 @@ pub fn ArrayIterator(comptime T: type, comptime array_len: usize) type {
         len: usize,
         idx: usize = 0,
 
-        pub fn init(items: []T) @This() {
+        pub fn init(items: []const T) @This() {
             std.debug.assert(items.len <= array_len);
             var arr = @This(){
                 .arr = undefined,

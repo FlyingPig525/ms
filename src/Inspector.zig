@@ -342,6 +342,15 @@ pub fn translate(this: *@This(), vec: rl.Vector2) rl.Vector2 {
     return vec.subtract(.init(this.width / 3, 0)).multiply(.init(1.5, 1.5));
 }
 
+pub fn resize(this: *@This(), width: f32, height: f32) !void {
+    this.prop_list_view = .init(0, height * 2 / 3, width / 2, height / 3);
+    this.func_list_view = .init(width / 2, height * 2 / 3, width / 2, height / 3);
+    this.width = width;
+    this.height = height;
+    this.texture.unload();
+    this.texture = try .init(@floor(width), @floor(height));
+}
+
 pub fn draw(this: *@This()) !void {
     try this.reloadGraph(this.root_entry.node);
     rl.clearBackground(rl.getColor(@bitCast(rgui.getStyle(.default, .background_color))));

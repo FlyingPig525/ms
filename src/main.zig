@@ -86,6 +86,10 @@ const GridSpace = union(GridSpace.Type) {
         return this.biome().neighbors();
     }
 
+    pub fn rateMod(this: GridSpace) f32 {
+        return this.biome().rateMod();
+    }
+
     pub fn biome(this: GridSpace) Biome {
         switch (this) {
             inline else => |a| {
@@ -456,8 +460,7 @@ const Board = struct {
                 var y: i32 = 0;
                 while (y < chunk_size) : (y += 1) {
                     const off = sized.lAdd(x, y);
-                    const n = this.noise.genNoise2D(@floatFromInt(off.x), @floatFromInt(off.y));
-                    const biome = Biome.fromValue(n);
+                    const biome = this.cellBiome(off);
                     defer {
                         switch ((chunk.getPtr(x, y) catch unreachable).*) {
                             inline else => |*a| {
@@ -466,7 +469,7 @@ const Board = struct {
                         }
                     }
                     if (off.lEql(0, 0)) continue;
-                    if (this.getPositionBomb(off, bomb_rate)) {
+                    if (this.getPositionBomb(off, bomb_rate * biome.rateMod())) {
                         chunk.silentSet(x, y, .{ .mine = .{ .biome = biome } });
                     }
                 }
@@ -482,8 +485,9 @@ const Board = struct {
                     var n = cell.neighbors();
                     while (n.next()) |vec| {
                         const abs = vec.lAdd(x, y);
-                        const rate = if (abs.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else this.chunk_bomb_rate;
-                        if (this.getPositionBomb(sized.add(abs), rate)) {
+                        const n_biome = this.cellBiome(sized.add(abs));
+                        const rate = if (abs.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else bomb_rate;
+                        if (this.getPositionBomb(sized.add(abs), rate * n_biome.rateMod())) {
                             count += 1;
                         }
                     }
@@ -494,6 +498,11 @@ const Board = struct {
             }
         }
         return chunk;
+    }
+
+    fn cellBiome(this: *Board, pos: IVec2) Biome {
+        const n = this.noise.genNoise2D(@floatFromInt(pos.x), @floatFromInt(pos.y));
+        return Biome.fromValue(n);
     }
 
     pub fn setup(this: *Board) !void {
@@ -1118,20 +1127,16 @@ const Biome = enum {
     three_bombs,
     cardinal,
     diagonal,
-    five_by_five,
 
     pub fn fromValue(value: f32) Biome {
         return switch (@as(i8, @floor(value * 100))) {
             21...100 => .default,
-            1...20 => .default,
-            -89...0 => .five_by_five,
-            //            1...20 => .high_rate,
-            //            -19...0 => .two_bombs,
-            //            -49...-20 => .three_bombs,
-            //            -69...-50 => .cardinal,
-            //            -89...-70 => .diagonal,
-            //            else => .five_by_five,
-            else => .five_by_five,
+            1...20 => .high_rate,
+            -19...0 => .two_bombs,
+            -49...-20 => .three_bombs,
+            -69...-50 => .cardinal,
+            -89...-70 => .diagonal,
+            else => .default,
         };
     }
 
@@ -1153,32 +1158,41 @@ const Biome = enum {
                 }
                 return comptime .init(&arr);
             },
-            .five_by_five => {
-                comptime var arr: [5 * 5 - 1]IVec2 = undefined;
-                comptime {
-                    var i = 0;
-                    var x = -2;
-                    while (x <= 2) : (x += 1) {
-                        var y = -2;
-                        while (y <= 2) : (y += 1) {
-                            if (x == 0 and y == 0) continue;
-                            arr[i] = .{ .x = x, .y = y };
-                            i += 1;
-                        }
-                    }
-                }
-                return comptime .init(&arr);
+            .cardinal => {
+                return .init(&.{
+                    .{ .x = 0, .y = -1 },
+                    .{ .x = 0, .y = 1 },
+                    .{ .x = -1, .y = 0 },
+                    .{ .x = 1, .y = 0 },
+                });
             },
-            else => return .init(&.{}),
+            .diagonal => {
+                return .init(&.{
+                    .{ .x = -1, .y = -1 },
+                    .{ .x = 1, .y = 1 },
+                    .{ .x = -1, .y = 1 },
+                    .{ .x = 1, .y = -1 },
+                });
+            },
+            else => return comptime Biome.default.neighbors(),
         }
     }
 
     pub fn colors(b: Biome) CellColors {
         switch (b) {
             .default => return .{ .background = .fromInt(tertiary_color), .foreground = .fromInt(primary_color) },
-            .five_by_five => return .{ .background = .dark_green, .foreground = .green },
-            else => return .{ .background = .fromInt(tertiary_color), .foreground = .fromInt(primary_color) },
+            .high_rate => return .{ .background = .fromInt(0x4a2331ff), .foreground = .fromInt(0xb53462ff) },
+            .cardinal => return .{ .background = .fromInt(0x383c37ff), .foreground = .fromInt(0xafc99dff) },
+            .diagonal => return .{ .background = .fromInt(0x191919ff), .foreground = .fromInt(0x988d62ff) },
+            else => return Biome.default.colors(),
         }
+    }
+
+    pub fn rateMod(b: Biome) f32 {
+        return switch (b) {
+            .high_rate => 1.4,
+            else => 1,
+        };
     }
 };
 
@@ -1269,10 +1283,11 @@ pub fn main(init: std.process.Init) !void {
     try aMain(init);
 }
 pub fn aMain(init: std.process.Init) !void {
-    const screen_width = 1080;
-    const screen_height = 720;
+    var screen_width: f32 = 1080;
+    var screen_height: f32 = 720;
 
-    rl.initWindow(screen_width, screen_height, "Minesweeeeeper");
+    rl.initWindow(@floor(screen_width), @floor(screen_height), "Minesweeeeeper");
+    rl.setWindowState(.{ .window_resizable = true });
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 
@@ -1317,6 +1332,14 @@ pub fn aMain(init: std.process.Init) !void {
         try board.setup();
         var last_cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
         while (!(should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
+            if (rl.isWindowResized()) {
+                screen_width = @floatFromInt(rl.getScreenWidth());
+                screen_height = @floatFromInt(rl.getScreenHeight());
+                try inspector.resize(screen_width, screen_height);
+                root.screen_size = .init(screen_width, screen_height);
+                root.true_size = .init(screen_width, screen_height);
+                camera.camera.offset = .{ .x = screen_width / 2, .y = screen_height / 2 };
+            }
             const dt = rl.getFrameTime();
             if (rl.isKeyDown(.left_shift) and rl.isKeyPressed(.escape)) {
                 should_exit = true;
