@@ -8,6 +8,7 @@ const Inspector = @import("Inspector.zig");
 const TwoDimensionalList = @import("two_dimensional_list.zig").TwoDimensionalList;
 const IVec2 = math.IVec2;
 const ArrayIterator = @import("array_iterator.zig").ArrayIterator;
+const easing = @import("easing.zig");
 
 const primary_color: i32 = 0x47bf98ff;
 const secondary_color: i32 = 0x214e45ff;
@@ -17,13 +18,13 @@ fn Cell(comptime T: type) type {
     if (T == void) {
         return struct {
             hidden: bool = true,
-            flagged: bool = false,
+            flags: u8 = 0,
             biome: Biome,
         };
     }
     return struct {
         hidden: bool = true,
-        flagged: bool = false,
+        flags: u8 = 0,
         biome: Biome,
         value: T,
     };
@@ -36,7 +37,7 @@ fn defaultDrawTextEx(text: [:0]const u8, position: rl.Vector2, font_size: f32, t
 
 const GridSpace = union(GridSpace.Type) {
     number: Cell(u8),
-    mine: Cell(void),
+    mine: Cell(u8),
     empty_cell: Cell(void),
 
     const Type = enum {
@@ -53,7 +54,12 @@ const GridSpace = union(GridSpace.Type) {
     }
     pub fn flagged(this: GridSpace) bool {
         switch (this) {
-            inline else => |v| return v.flagged,
+            inline else => |v| return v.flags > 0,
+        }
+    }
+    pub fn flags(this: GridSpace) u8 {
+        switch (this) {
+            inline else => |v| return v.flags,
         }
     }
 
@@ -66,7 +72,7 @@ const GridSpace = union(GridSpace.Type) {
             },
         }
         if (this.* == .empty_cell) {
-            var n = this.neighbors();
+            var n = this.neighbors(.{ .x = info.x, .y = info.y });
             while (n.next()) |vec| {
                 const abs = vec.lAdd(info.x, info.y);
                 if (info.list.getPtr(abs.x, abs.y)) |cell| {
@@ -77,13 +83,13 @@ const GridSpace = union(GridSpace.Type) {
         return std.meta.activeTag(this.*);
     }
 
-    pub fn colors(this: GridSpace) CellColors {
-        return this.biome().colors();
+    pub fn colors(this: GridSpace, pos: IVec2) CellColors {
+        return this.biome().colors(pos);
     }
 
     pub const Neighbors = ArrayIterator(IVec2, 5 * 5);
-    pub fn neighbors(this: GridSpace) Neighbors {
-        return this.biome().neighbors();
+    pub fn neighbors(this: GridSpace, pos: IVec2) Neighbors {
+        return this.biome().neighbors(pos);
     }
 
     pub fn rateMod(this: GridSpace) f32 {
@@ -103,17 +109,21 @@ const GridSpace = union(GridSpace.Type) {
         if (this.* == .number) {
             const value = this.number.value;
             var flagged_cells: u8 = 0;
+            var flag_cnt: u8 = 0;
             var hidden_cells: u8 = 0;
-            var n = this.neighbors();
+            var n = this.neighbors(.{ .x = info.x, .y = info.y });
             while (n.next()) |vec| {
                 const abs = vec.lAdd(info.x, info.y);
                 if (info.list.get(abs.x, abs.y)) |cell| {
-                    if (cell.flagged()) flagged_cells += 1;
+                    if (cell.flagged()) {
+                        flagged_cells += 1;
+                        flag_cnt += cell.flags();
+                    }
                     if (cell.hidden()) hidden_cells += 1;
                 }
             }
             if (hidden_cells == flagged_cells) return false;
-            if (flagged_cells >= value) {
+            if (flag_cnt >= value) {
                 n.reset();
                 while (n.next()) |vec| {
                     if (vec.eql(.zero)) continue;
@@ -140,11 +150,11 @@ const GridSpace = union(GridSpace.Type) {
         return false;
     }
 
-    pub fn toggleFlag(this: *GridSpace) void {
+    pub fn flag(this: *GridSpace) void {
         switch (this.*) {
             inline else => |*v| {
                 if (!v.hidden) return;
-                v.flagged = !v.flagged;
+                if (v.flags + 1 > this.biome().maxBombs()) v.flags = 0 else v.flags += 1;
             },
         }
     }
@@ -166,7 +176,7 @@ const GridSpace = union(GridSpace.Type) {
             .width = opt.width,
             .height = opt.height,
         };
-        const c = this.colors();
+        const c = this.colors(.{ .x = opt.x, .y = opt.y });
         var color: rl.Color = c.background;
         rl.drawRectangleRec(rect, c.background);
 
@@ -176,8 +186,8 @@ const GridSpace = union(GridSpace.Type) {
                     var buf: [4]u8 = undefined;
                     const txt = std.fmt.bufPrintZ(&buf, "{d}", .{num.value}) catch unreachable;
                     const font = rl.getFontDefault() catch unreachable;
-                    const dim = rl.measureTextEx(font, txt, 10, @floatFromInt(font.glyphPadding));
-                    defaultDrawTextEx(txt, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
+                    const dim = rl.measureTextEx(font, txt, 10, 2);
+                    defaultDrawTextEx(txt, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, c.text);
                     color = .blank;
                 },
                 .mine => {
@@ -188,7 +198,12 @@ const GridSpace = union(GridSpace.Type) {
             }
         } else {
             if (this.flagged()) {
-                color = .dark_gray;
+                rl.drawRectangleRec(rect, .dark_gray);
+                const txt = std.fmt.digitToChar(this.flags(), .lower);
+                const font = rl.getFontDefault() catch unreachable;
+                const dim = rl.measureTextEx(font, &.{ txt }, 10, 2);
+                defaultDrawTextEx(&.{ txt }, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
+                color = .blank;
             } else {
                 color = c.foreground;
             }
@@ -204,68 +219,48 @@ const GridSpace = union(GridSpace.Type) {
 
 const Camera = struct {
     camera: rl.Camera2D,
-    last_pos: rl.Vector2,
-    target: rl.Vector2,
-    duration: ?f64 = null,
-    start_time: ?f64 = null,
+    pos: easing.EVector2,
 
     pub fn init(camera: rl.Camera2D) Camera {
         return .{
             .camera = camera,
-            .last_pos = camera.target,
-            .target = camera.target,
+            .pos = .init(camera.target),
         };
     }
 
-    pub fn animateShift(this: *Camera, x: f32, y: f32, duration: f64) void {
-        this.animateMove(this.target.x + x, this.target.y + y, duration);
+    pub fn animateShift(this: *Camera, x: f32, y: f32, duration: f32) void {
+        const target = this.pos.targetVec();
+        this.animateMove(target.x + x, target.y + y, duration);
     }
 
     pub fn shift(this: *Camera, x: f32, y: f32) void {
-        this.move(this.target.x + x, this.target.y + y);
+        const target = this.pos.targetVec();
+        this.move(target.x + x, target.y + y);
     }
 
     pub fn move(this: *Camera, x: f32, y: f32) void {
-        this.last_pos = this.camera.target;
-        this.target = .{ .x = x, .y = y };
-        this.duration = null;
-        this.start_time = null;
-        this.camera.target = this.target;
+        this.pos.set(x, y);
+        this.camera.target = this.pos.targetVec();
     }
 
-    pub fn animateMove(this: *Camera, x: f32, y: f32, duration: f64) void {
-        this.last_pos = this.camera.target;
-        this.target = .{ .x = x, .y = y };
-        this.duration = duration;
-        this.start_time = rl.getTime();
+    pub fn animateMove(this: *Camera, x: f32, y: f32, duration: f32) void {
+        this.pos.interpolate(.linear, duration, .init(x, y));
     }
 
-    pub fn tick(this: *Camera) void {
-        if (this.duration) |duration| {
-            const target = this.target;
-            const start_time = this.start_time.?;
-            const last_pos = this.last_pos;
-            if (!this.camera.target.equals(target)) blk: {
-                const now = rl.getTime();
-                if (start_time + duration <= now) {
-                    this.camera.target = target;
-                    break :blk;
-                }
-                const difference = target.subtract(last_pos);
-                const multiplier = (now - start_time) / duration;
-                const multiplied = difference.multiply(.{ .x = @floatCast(multiplier), .y = @floatCast(multiplier) });
-                this.camera.target = last_pos.add(multiplied);
-            } else {
-                this.duration = null;
-                this.start_time = null;
-            }
-        }
+    pub fn tick(this: *Camera, dt: f32) void {
+        this.pos.tick(dt);
+        this.camera.target = this.pos.toVec2();
     }
 };
 
 const Settings = struct {
     keyboard_mode: bool = true,
     invert_mouse_wheel: bool = false,
+};
+
+const Highlight = struct {
+    pos: IVec2,
+    color: rl.Color,
 };
 
 const Board = struct {
@@ -283,16 +278,18 @@ const Board = struct {
     mode: Mode,
     settings: *Settings,
     noise: fast.Noise(f32),
+    biome_manager: BiomeManager,
     end_thyself: bool = false,
     dead: bool = false,
     chunks_to_generate: std.ArrayList(IVec2) = .empty,
+    highlighted_cells: std.ArrayList(Highlight) = .empty,
 
     pub const Mode = enum {
         default,
         flag_only,
     };
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, chunk_bomb_rate: f32, camera: *Camera, mode: Mode, settings: *Settings) !Board {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, chunk_bomb_rate: f32, camera: *Camera, mode: Mode, settings: *Settings, biome_manager: BiomeManager) !Board {
         const seed = std.Io.Timestamp.now(io, .real).toMilliseconds();
         return .{
             .io = io,
@@ -311,11 +308,26 @@ const Board = struct {
                 .cellular_jitter_mod = 1.0,
                 .seed = @truncate(seed),
             },
+            .biome_manager = biome_manager,
         };
     }
 
     pub fn deinit(this: Board) void {
         this.arena.deinit();
+    }
+
+    pub fn highlightNeighbors(this: *Board, pos: IVec2) !void {
+        const cell = this.getPtr(pos.x, pos.y) orelse return;
+        if (cell.hidden()) return;
+        this.highlighted_cells.clearAndFree(this.arena.allocator());
+        var n = cell.neighbors(pos);
+        try this.highlighted_cells.ensureTotalCapacity(this.arena.allocator(), n.len);
+        while (n.next()) |vec| {
+            this.highlighted_cells.appendAssumeCapacity(.{
+                .pos = pos.add(vec),
+                .color = .white,
+            });
+        }
     }
 
     const default_camera_zoom = 1.8719;
@@ -327,6 +339,18 @@ const Board = struct {
             }
         }
         this.chunks_to_generate.clearAndFree(this.arena.allocator());
+        var clear = false;
+        for (this.highlighted_cells.items) |*highlight| {
+            const a = highlight.color.normalize().w;
+            highlight.color = highlight.color.fade(a - dt);
+            if (a <= dt) {
+                clear = true;
+            }
+        }
+        if (clear) {
+            this.highlighted_cells.clearAndFree(this.arena.allocator());
+        }
+        const cursor = if (this.settings.keyboard_mode) this.cursor_pos else this.mouseToCell();
         if (this.settings.keyboard_mode) {
             if (rl.isKeyPressed(.a) or rl.isKeyPressedRepeat(.a)) {
                 this.cursor_pos.x -= 1;
@@ -344,17 +368,6 @@ const Board = struct {
                 this.cursor_pos.y += 1;
                 this.camera.animateShift(0, 20, 0.2);
             }
-            if (rl.isKeyPressed(.space)) blk: {
-                if (this.dead) {
-                    this.end_thyself = true;
-                    break :blk;
-                }
-                try this.reveal(this.cursor_pos);
-            }
-
-            if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) {
-                try this.flag(this.cursor_pos);
-            }
         } else {
             if (rl.isKeyDown(.a)) {
                 this.camera.shift(-200 * dt, 0);
@@ -369,9 +382,9 @@ const Board = struct {
                 this.camera.shift(0, 200 * dt);
             }
 
-            const cursor = this.mouseToCell();
             if (rl.isMouseButtonPressed(.right)) {
                 try this.flag(cursor);
+                try this.highlightNeighbors(cursor);
             }
             if (rl.isMouseButtonPressed(.left)) blk: {
                 if (this.dead) {
@@ -397,8 +410,20 @@ const Board = struct {
         if (rl.isKeyPressed(.r)) {
             this.camera.camera.zoom = default_camera_zoom;
         }
+        if (rl.isKeyPressed(.space)) blk: {
+            if (this.dead) {
+                this.end_thyself = true;
+                break :blk;
+            }
+            try this.reveal(cursor);
+        }
 
-        this.camera.tick();
+        if (rl.isKeyPressed(.f) or rl.isKeyPressed(.j)) {
+            try this.flag(cursor);
+            try this.highlightNeighbors(cursor);
+        }
+
+        this.camera.tick(dt);
     }
 
     fn reveal(this: *Board, pos: IVec2) !void {
@@ -426,7 +451,7 @@ const Board = struct {
             std.log.err("null cell {d} {d}\n", .{ pos.x, pos.y });
             return;
         };
-        ptr.toggleFlag();
+        ptr.flag();
         if (this.mode == .flag_only) {
             var x: i32 = -1;
             loop: while (x <= 1) : (x += 1) {
@@ -446,9 +471,14 @@ const Board = struct {
         return @bitCast(this.seed +% @as(i64, @bitCast(pos)));
     }
 
-    pub fn getPositionBomb(this: *Board, pos: IVec2, bomb_rate: f32) bool {
+    pub fn getPositionBomb(this: *Board, pos: IVec2, bomb_rate: f32, max: u8) u8 {
         var prng = std.Random.DefaultPrng.init(this.getPositionSeed(pos));
-        return prng.random().float(f32) < bomb_rate;
+        const rand = prng.random().float(f32);
+        if (rand < bomb_rate) {
+            if (rand <= 0) return max;
+            return @floor(@min(@divFloor(bomb_rate, rand), max));
+        }
+        return 0;
     }
 
     fn generateChunk(this: *Board, pos: IVec2, bomb_rate: f32) !Chunk {
@@ -469,8 +499,9 @@ const Board = struct {
                         }
                     }
                     if (off.lEql(0, 0)) continue;
-                    if (this.getPositionBomb(off, bomb_rate * biome.rateMod())) {
-                        chunk.silentSet(x, y, .{ .mine = .{ .biome = biome } });
+                    const bomb = this.getPositionBomb(off, bomb_rate * biome.rateMod(), biome.maxBombs());
+                    if (bomb > 0) {
+                        chunk.silentSet(x, y, .{ .mine = .{ .biome = biome, .value = bomb } });
                     }
                 }
             }
@@ -482,13 +513,14 @@ const Board = struct {
                 const cell = try chunk.get(x, y);
                 if (cell == .empty_cell) {
                     var count: u8 = 0;
-                    var n = cell.neighbors();
+                    var n = cell.neighbors(sized.lAdd(x, y));
                     while (n.next()) |vec| {
                         const abs = vec.lAdd(x, y);
                         const n_biome = this.cellBiome(sized.add(abs));
-                        const rate = if (abs.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else bomb_rate;
-                        if (this.getPositionBomb(sized.add(abs), rate * n_biome.rateMod())) {
-                            count += 1;
+                        const rate = if (abs.add(sized).floorDivValue(chunk_size).eql(.zero) and this.mode == .flag_only) -1 else this.chunk_bomb_rate;
+                        const bombs = this.getPositionBomb(sized.add(abs), rate * n_biome.rateMod(), n_biome.maxBombs());
+                        if (bombs > 0) {
+                            count += bombs;
                         }
                     }
                     if (count > 0) {
@@ -502,7 +534,7 @@ const Board = struct {
 
     fn cellBiome(this: *Board, pos: IVec2) Biome {
         const n = this.noise.genNoise2D(@floatFromInt(pos.x), @floatFromInt(pos.y));
-        return Biome.fromValue(n);
+        return this.biome_manager.fromValue(n);
     }
 
     pub fn setup(this: *Board) !void {
@@ -552,6 +584,10 @@ const Board = struct {
                     const cell = this.get(x, y) orelse continue;
                     cell.draw(.{ .x = x, .y = y, .width = 20, .height = 20, .hovering = cursor.lEql(x, y) });
                 }
+            }
+            for (this.highlighted_cells.items) |highlight| {
+                const real = highlight.pos.multValue(20);
+                rl.drawRectangleRec(.init(@floatFromInt(real.x), @floatFromInt(real.y), 20, 20), highlight.color);
             }
             const tl_chunk = tl_vec.floorDivValue(chunk_size);
             const br_chunk = br_vec.floorDivValue(chunk_size);
@@ -1118,6 +1154,68 @@ fn iterateKeysPressed() ?rl.KeyboardKey {
 const CellColors = struct {
     foreground: rl.Color,
     background: rl.Color,
+    text: rl.Color = .white,
+};
+
+const BiomeManager = struct {
+    periods: []Period,
+    default: Biome = .default,
+
+    pub fn init(gpa: std.mem.Allocator, periods: []const Period, default: Biome) !BiomeManager {
+        var list = try std.ArrayList(i8).initCapacity(gpa, periods.len * 2);
+        defer list.deinit(gpa);
+        for (periods) |p| {
+            for (list.items) |i| {
+                if (p.lower == i) {
+                    std.log.err("Overlapping periods {d} and {d}", .{ i, i });
+                    return error.OverlappingPeriods;
+                }
+                if (p.upper == i) {
+                    std.log.err("Overlapping periods {d} and {d}", .{ i, i });
+                    return error.OverlappingPeriods;
+                }
+                list.appendAssumeCapacity(p.lower);
+                list.appendAssumeCapacity(p.upper);
+            }
+        }
+        return .{
+            .periods = try gpa.dupe(Period, periods),
+            .default = default,
+        };
+    }
+
+    pub fn initDefault(gpa: std.mem.Allocator) !BiomeManager {
+        return init(gpa, &.{
+            .init(21, 100, .default),
+            .init(1, 20, .high_rate),
+            .init(-19, 0, .two_bombs),
+            .init(-49, -20, .three_bombs),
+            .init(-69, -50, .cardinal),
+            .init(-89, -70, .line),
+        }, .default);
+    }
+
+    pub fn deinit(this: BiomeManager, gpa: std.mem.Allocator) void {
+        gpa.free(this.periods);
+    }
+
+    pub fn fromValue(this: BiomeManager, value: f32) Biome {
+        const int: i8 = @floor(value * 100);
+        for (this.periods) |p| {
+            if (int >= p.lower and int <= p.upper) return p.biome;
+        }
+        return this.default;
+    }
+
+    pub const Period = struct {
+        biome: Biome,
+        lower: i8,
+        upper: i8,
+
+        pub fn init(lower: i8, upper: i8, biome: Biome) Period {
+            return .{ .lower = lower, .upper = upper, .biome = biome };
+        }
+    };
 };
 
 const Biome = enum {
@@ -1126,7 +1224,7 @@ const Biome = enum {
     two_bombs,
     three_bombs,
     cardinal,
-    diagonal,
+    line,
 
     pub fn fromValue(value: f32) Biome {
         return switch (@as(i8, @floor(value * 100))) {
@@ -1135,12 +1233,12 @@ const Biome = enum {
             -19...0 => .two_bombs,
             -49...-20 => .three_bombs,
             -69...-50 => .cardinal,
-            -89...-70 => .diagonal,
+            -89...-70 => .line,
             else => .default,
         };
     }
 
-    pub fn neighbors(b: Biome) GridSpace.Neighbors {
+    pub fn neighbors(b: Biome, pos: IVec2) GridSpace.Neighbors {
         switch (b) {
             .default => {
                 comptime var arr: [3 * 3 - 1]IVec2 = undefined;
@@ -1166,7 +1264,18 @@ const Biome = enum {
                     .{ .x = 1, .y = 0 },
                 });
             },
-            .diagonal => {
+            .line => {
+                if (pos.remValue(2).abs().lEql(1, 0) or pos.remValue(2).abs().lEql(0, 1)) {
+                    return .init(&.{
+                        .{ .x = -1, .y = 0 },
+                        .{ .x = 1, .y = 0 },
+                    });
+                } else {
+                    return .init(&.{
+                        .{ .x = 0, .y = -1 },
+                        .{ .x = 0, .y = 1 },
+                    });
+                }
                 return .init(&.{
                     .{ .x = -1, .y = -1 },
                     .{ .x = 1, .y = 1 },
@@ -1174,18 +1283,33 @@ const Biome = enum {
                     .{ .x = 1, .y = -1 },
                 });
             },
-            else => return comptime Biome.default.neighbors(),
+            else => return Biome.default.neighbors(pos),
         }
     }
 
-    pub fn colors(b: Biome) CellColors {
+    pub fn colors(b: Biome, pos: IVec2) CellColors {
         switch (b) {
             .default => return .{ .background = .fromInt(tertiary_color), .foreground = .fromInt(primary_color) },
             .high_rate => return .{ .background = .fromInt(0x4a2331ff), .foreground = .fromInt(0xb53462ff) },
             .cardinal => return .{ .background = .fromInt(0x383c37ff), .foreground = .fromInt(0xafc99dff) },
-            .diagonal => return .{ .background = .fromInt(0x191919ff), .foreground = .fromInt(0x988d62ff) },
-            else => return Biome.default.colors(),
+            .line => {
+                if (pos.remValue(2).abs().lEql(1, 0) or pos.remValue(2).abs().lEql(0, 1)) {
+                    return .{ .background = .fromInt(0x333333ff), .foreground = .fromInt(0xddddddff) };
+                } else {
+                    return .{ .background = .fromInt(0x111111ff), .foreground = .fromInt(0xbbbbbbff) };
+                }
+            },
+            .two_bombs => return .{ .background = .fromInt(0x1d4052ff), .foreground = .fromInt(0x42a3cdff) },
+            .three_bombs => return .{ .background = .fromInt(0x332c7dff), .foreground = .fromInt(0xa140cfff) },
         }
+    }
+
+    pub fn maxBombs(b: Biome) u8 {
+        return switch (b) {
+            .two_bombs => 2,
+            .three_bombs => 3,
+            else => 1,
+        };
     }
 
     pub fn rateMod(b: Biome) f32 {
@@ -1196,7 +1320,7 @@ const Biome = enum {
     }
 };
 
-pub fn bMain(init: std.process.Init) !void {
+pub fn noiseVisual(init: std.process.Init) !void {
     const seed: i32 = @truncate(std.Io.Timestamp.now(init.io, .real).toMilliseconds());
     const n = fast.Noise(f32){
         .frequency = 0.001,
@@ -1280,9 +1404,6 @@ pub fn bMain(init: std.process.Init) !void {
     }
 }
 pub fn main(init: std.process.Init) !void {
-    try aMain(init);
-}
-pub fn aMain(init: std.process.Init) !void {
     var screen_width: f32 = 1080;
     var screen_height: f32 = 720;
 
@@ -1324,10 +1445,13 @@ pub fn aMain(init: std.process.Init) !void {
     var keys_pressed: std.ArrayList(rl.KeyboardKey) = .empty;
     defer keys_pressed.deinit(init.gpa);
 
+    const biome_manager = try BiomeManager.initDefault(init.gpa);
+    defer biome_manager.deinit(init.gpa);
+
     while (!(should_exit or rl.windowShouldClose())) {
         should_restart = false;
         camera.move(10, 10);
-        var board = try Board.init(init.gpa, init.io, 0.2, &camera, target_mode, &settings);
+        var board = try Board.init(init.gpa, init.io, 0.2, &camera, target_mode, &settings, biome_manager);
         defer board.deinit();
         try board.setup();
         var last_cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));

@@ -53,6 +53,9 @@ pub fn NumVec2(comptime T: type) type {
         pub fn maxComp(this: @This(), other: @This()) @This() {
             return .{ .x = @max(this.x, other.y), .y = @max(this.y, other.y) };
         }
+        pub fn abs(this: @This()) @This() {
+            return .{ .x = @intCast(@abs(this.x)), .y = @intCast(@abs(this.y)) };
+        }
 
         pub const zero: @This() = .{ .x = 0, .y = 0 };
         pub const max: @This() = .{ .x = maxNum(T), .y = maxNum(T) };
