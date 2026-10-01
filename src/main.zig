@@ -201,8 +201,8 @@ const GridSpace = union(GridSpace.Type) {
                 rl.drawRectangleRec(rect, .dark_gray);
                 const txt = std.fmt.digitToChar(this.flags(), .lower);
                 const font = rl.getFontDefault() catch unreachable;
-                const dim = rl.measureTextEx(font, &.{ txt }, 10, 2);
-                defaultDrawTextEx(&.{ txt }, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
+                const dim = rl.measureTextEx(font, &.{txt}, 10, 2);
+                defaultDrawTextEx(&.{txt}, .{ .x = x + (opt.width / 2) - (dim.x / 2), .y = y + (opt.height / 2) - (dim.y / 2) }, 10, .white);
                 color = .blank;
             } else {
                 color = c.foreground;
@@ -591,9 +591,16 @@ const Board = struct {
             }
             const tl_chunk = tl_vec.floorDivValue(chunk_size);
             const br_chunk = br_vec.floorDivValue(chunk_size);
+            const tr_pos = rl.getScreenToWorld2D(.init(@floatFromInt(rl.getScreenWidth()), 0), this.camera.camera);
+            const tr_vec = IVec2{ .x = @floor(tr_pos.x / 20), .y = @floor(tr_pos.y / 20) };
+            const tr_chunk = tr_vec.floorDivValue(chunk_size);
+            const bl_pos = rl.getScreenToWorld2D(.init(0, @floatFromInt(rl.getScreenHeight())), this.camera.camera);
+            const bl_vec = IVec2{ .x = @floor(bl_pos.x / 20), .y = @floor(bl_pos.y / 20) };
+            const bl_chunk = bl_vec.floorDivValue(chunk_size);
+
             try this.checkAndQueueAdjacentChunks(tl_chunk);
-            try this.checkAndQueueAdjacentChunks(tl_chunk.minComp(br_chunk));
-            try this.checkAndQueueAdjacentChunks(tl_chunk.maxComp(br_chunk));
+            try this.checkAndQueueAdjacentChunks(tr_chunk);
+            try this.checkAndQueueAdjacentChunks(bl_chunk);
             try this.checkAndQueueAdjacentChunks(br_chunk);
         }
         var buf: [64]u8 = undefined;
@@ -754,6 +761,9 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
         manager: *Manager,
         layout: *ui.LayoutNode,
         layout_node: *ui.Node,
+        rect: *ui.RectNode,
+        rect_node: *ui.Node,
+        rect_y: easing.Eased(f32),
         entries: [fields.len]*EntryNode,
         entry_nodes: [fields.len]*ui.Node,
         // added back because it feels weird to not be able to select a different option with the mouse while another menu is open
@@ -765,15 +775,17 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             entry: Enum,
             text: *ui.TextNode,
             text_node: *ui.Node,
-            rect: *ui.RectNode,
-            rect_node: *ui.Node,
+            text_x: easing.Eased(f32),
+            //rect: *ui.RectNode,
+            //rect_node: *ui.Node,
             selected: bool,
 
             const entry_vtable: ui.Node.VTable = .{
                 .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
-                .calculate_size = calculateSize,
+                .calculate_size = EntryNode.calculateSize,
                 .type_info = ui.Node.VTable.basicTypeInfo(EntryNode, &.{"selected"}),
                 .cursor_pos = cursorPos,
+                .tick = EntryNode.tick,
             };
 
             pub fn init(gpa: std.mem.Allocator, menu: *This, entry: Enum, text: [:0]const u8) !*EntryNode {
@@ -783,11 +795,12 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
                 node.menu = menu;
                 node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
                 node.text_node = try node.text.toNode();
+                node.text_x = .init(0);
                 try node.text_node.setId("entry-text");
-                node.rect = try ui.RectNode.init(gpa, .blank);
-                node.rect_node = try node.rect.toNode();
-                try node.rect_node.setId("selector-square");
-                node.rect_node.space.size.x = 3;
+                //node.rect = try ui.RectNode.init(gpa, .blank);
+                //node.rect_node = try node.rect.toNode();
+                //try node.rect_node.setId("selector-square");
+                //node.rect_node.space.size.x = 3;
                 node.selected = false;
                 return node;
             }
@@ -796,10 +809,16 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
                 this.gpa.destroy(this);
             }
 
+            fn tick(node: *ui.Node, dt: f32) !void {
+                const this = node.mgr(EntryNode);
+                this.text_x.tick(dt);
+                this.text_node.space.offset.x = this.text_x.current_value;
+            }
+
             pub fn toNode(this: *EntryNode) !*ui.Node {
                 const node = try ui.Node.init(this.gpa, this, .zero, &entry_vtable);
                 try node.addChild(this.text_node);
-                try node.addChild(this.rect_node);
+                //try node.addChild(this.rect_node);
                 return node;
             }
 
@@ -807,7 +826,7 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             fn calculateSize(node: *ui.Node) !rl.Vector2 {
                 const this = node.mgr(EntryNode);
                 try this.text_node.calculateSize();
-                this.rect_node.space.size.y = this.text_node.space.size.y;
+                //this.rect_node.space.size.y = this.text_node.space.size.y;
                 return this.text_node.space.size.add(.init(12, 0));
             }
 
@@ -821,15 +840,15 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             pub fn deselect(this: *EntryNode) void {
                 this.selected = false;
                 this.text.tint = .white;
-                this.text_node.space.offset.x = 0;
-                this.rect.color = .blank;
+                this.text_x.interpolate(.iosine, 0.4, 0);
+                //this.rect.color = .blank;
             }
 
             pub fn select(this: *EntryNode) void {
                 this.selected = true;
                 this.text.tint = .light_gray;
-                this.text_node.space.offset.x = 12;
-                this.rect.color = .light_gray;
+                this.text_x.interpolate(.iosine, 0.4, 12);
+                //this.rect.color = .light_gray;
             }
         };
 
@@ -842,6 +861,11 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
             node.layout_node = try node.layout.toNode();
             node.layout_node.space.offset.x = 12;
+            node.rect = try ui.RectNode.init(gpa, .white);
+            node.rect_node = try node.rect.toNode();
+            node.rect_node.space.offset.x = 12;
+            node.rect_node.space.size.x = 3;
+            node.rect_y = .init(0);
             inline for (0..fields.len) |i| {
                 node.entries[i] = try .init(gpa, node, @enumFromInt(fields[i].value), fields[i].name);
                 node.entry_nodes[i] = try node.entries[i].toNode();
@@ -849,6 +873,7 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
                 try node.layout_node.addChild(node.entry_nodes[i]);
             }
             node.entries[0].select();
+            node.entries[0].text_x.set(12);
             return node;
         }
 
@@ -857,20 +882,26 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
         }
 
         pub fn hover(this: *This, node: *EntryNode) void {
+            if (this.active == node.entry) return;
             this.active = node.entry;
+            this.rect.color = .blank;
             this.updateNodes();
         }
 
         pub fn updateNodes(this: *This) void {
             inline for (0..fields.len) |i| {
                 this.entries[i].deselect();
-                if (@intFromEnum(this.active) == fields[i].value) this.entries[i].select();
+                if (@intFromEnum(this.active) == fields[i].value) {
+                    this.entries[i].select();
+                    this.rect_y.interpolate(.iosine, 0.4, this.entry_nodes[i].space.offset.y);
+                }
             }
         }
 
         fn onInput(node: *ui.Node, key: rl.KeyboardKey, _: bool) !ui.Propagation {
             const this = node.mgr(This);
             if (!this.accept_input) return .propagate;
+            this.rect.color = .white;
             switch (key) {
                 .j => {
                     inline for (fields, 0..) |field, i| {
@@ -915,15 +946,32 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             return .consume;
         }
 
+        fn tick(node: *ui.Node, dt: f32) !void {
+            const this = node.mgr(This);
+            this.rect_y.tick(dt);
+            this.rect_node.space.offset.y = this.rect_y.current_value;
+        }
+
+        fn calculateSize(node: *ui.Node) !rl.Vector2 {
+            const this = node.mgr(This);
+            try this.layout_node.calculateSize();
+            this.rect_node.space.size.y = this.entry_nodes[0].space.size.y;
+            return this.layout_node.space.size;
+        }
+
         const vtable: ui.Node.VTable = .{
             .deinit = ui.Node.VTable.basicOpaqueDeinit(This),
             .on_input = onInput,
             .type_info = ui.Node.VTable.basicTypeInfo(This, &.{}),
             .on_click = onClick,
+            .tick = tick,
+            .calculate_size = This.calculateSize,
         };
         pub fn toNode(this: *This) !*ui.Node {
             const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
             try node.addChild(this.layout_node);
+            try node.addChild(this.rect_node);
+            this.rect_node.space.size.y = this.entry_nodes[0].space.size.y;
             return node;
         }
     };
