@@ -1363,6 +1363,8 @@ const Biome = enum {
     pub fn rateMod(b: Biome) f32 {
         return switch (b) {
             .high_rate => 1.4,
+            .two_bombs => 1.2,
+            .three_bombs => 1.3,
             else => 1,
         };
     }

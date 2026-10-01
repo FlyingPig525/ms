@@ -26,7 +26,7 @@ pub fn nextEnumValueWrap(value: anytype) @TypeOf(value) {
     const info = @typeInfo(@TypeOf(value)).@"enum";
     const idx = @intFromEnum(value);
     if (idx + 1 >= info.fields.len) return @enumFromInt(info.fields[0].value);
-    return @enumFromInt(idx + 1);
+    return @enumFromInt(info.fields[idx + 1].value);
 }
 
 /// Requires the enum backing value to be sequential
@@ -34,5 +34,5 @@ pub fn prevEnumValueWrap(value: anytype) @TypeOf(value) {
     const info = @typeInfo(@TypeOf(value)).@"enum";
     const idx = @intFromEnum(value);
     if (idx == 0) return @enumFromInt(info.fields[info.fields.len - 1].value);
-    return @enumFromInt(idx - 1);
+    return @enumFromInt(info.fields[idx - 1].value);
 }
