@@ -563,6 +563,23 @@ pub const Node = struct {
 pub const RootNode = struct {
     screen_size: rl.Vector2,
     true_size: rl.Vector2,
+    gpa: std.mem.Allocator,
+    node: *Node,
+
+    pub fn init(gpa: std.mem.Allocator, screen_size: rl.Vector2, true_size: rl.Vector2) !*RootNode {
+        const root = try gpa.create(RootNode);
+        root.screen_size = screen_size;
+        root.true_size = true_size;
+        root.gpa = gpa;
+        const node = try Node.init(gpa, root, .initSize(root.screen_size.x, root.screen_size.y), &vtable);
+        node.tools = &tools;
+        root.node = node;
+        return root;
+    }
+
+    pub fn deinit(this: *RootNode) void {
+        this.gpa.destroy(this);
+    }
 
     const tools: Node.DrawTools = .{
         .rect = drawRect,
@@ -578,6 +595,7 @@ pub const RootNode = struct {
     const vtable: Node.VTable = .{
         .add_child = addChild,
         .type_info = Node.VTable.basicTypeInfo(RootNode, &.{ "screen_size", "true_size" }),
+        .deinit = Node.VTable.basicOpaqueDeinit(RootNode),
     };
 
     fn drawRect(node: *Node, rect: rl.Rectangle, color: rl.Color) void {
@@ -660,12 +678,6 @@ pub const RootNode = struct {
     fn addChild(node: *Node, _: *Node) !void {
         try node.calculateSize();
     }
-
-    pub fn toNode(this: *RootNode, gpa: std.mem.Allocator) !*Node {
-        const node = try Node.init(gpa, this, .initSize(this.screen_size.x, this.screen_size.y), &vtable);
-        node.tools = &tools;
-        return node;
-    }
 };
 
 /// A node that draw text to the screen.
@@ -675,16 +687,18 @@ pub const TextNode = struct {
     font_size: f32,
     font: rl.Font,
     tint: rl.Color,
+    node: *Node,
 
     /// Dupes `text` into ram
     pub fn initDefault(gpa: std.mem.Allocator, text: [:0]const u8, font_size: f32, tint: rl.Color) !*TextNode {
-        const node = try gpa.create(TextNode);
-        node.gpa = gpa;
-        node.text = try gpa.dupeZ(u8, text);
-        node.font_size = font_size;
-        node.font = try rl.getFontDefault();
-        node.tint = tint;
-        return node;
+        const text_node = try gpa.create(TextNode);
+        text_node.gpa = gpa;
+        text_node.text = try gpa.dupeZ(u8, text);
+        text_node.font_size = font_size;
+        text_node.font = try rl.getFontDefault();
+        text_node.tint = tint;
+        text_node.node = try text_node.toNode();
+        return text_node;
     }
 
     pub fn deinit(this: *TextNode) void {
@@ -698,7 +712,7 @@ pub const TextNode = struct {
         .calculate_size = calculateSize,
         .type_info = Node.VTable.basicTypeInfo(TextNode, &.{ "text", "font_size", "tint" }),
     };
-    pub fn toNode(this: *TextNode) !*Node {
+    fn toNode(this: *TextNode) !*Node {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
     }
 
@@ -728,6 +742,7 @@ pub const LayoutNode = struct {
     direction: Direction,
     flow: Flow,
     gpa: std.mem.Allocator,
+    node: *Node,
 
     const vtable: Node.VTable = .{
         .deinit = Node.VTable.basicOpaqueDeinit(LayoutNode),
@@ -741,6 +756,7 @@ pub const LayoutNode = struct {
         node.direction = direction;
         node.flow = flow;
         node.gpa = gpa;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -748,7 +764,7 @@ pub const LayoutNode = struct {
         this.gpa.destroy(this);
     }
 
-    pub fn toNode(this: *LayoutNode) !*Node {
+    fn toNode(this: *LayoutNode) !*Node {
         return try Node.init(this.gpa, this, .initSize(0, 0), &vtable);
     }
 
@@ -852,6 +868,7 @@ pub const ImageNode = struct {
     texture: rl.Texture,
     target_size: ?rl.Vector2,
     loaded: bool,
+    node: *Node,
 
     pub fn init(gpa: std.mem.Allocator, file_name: [:0]const u8, size: ?rl.Vector2) !*ImageNode {
         const node = try gpa.create(ImageNode);
@@ -859,6 +876,7 @@ pub const ImageNode = struct {
         node.image = try .init(file_name);
         node.target_size = size;
         node.loaded = false;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -896,7 +914,7 @@ pub const ImageNode = struct {
         .calculate_size = calculateSize,
         .type_info = Node.VTable.basicTypeInfo(ImageNode, &.{ "loaded", "target_size" }),
     };
-    pub fn toNode(this: *ImageNode) !*Node {
+    fn toNode(this: *ImageNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
@@ -922,6 +940,7 @@ pub const ImageNode = struct {
 pub const RectNode = struct {
     gpa: std.mem.Allocator,
     color: rl.Color,
+    node: *Node,
 
     const vtable: Node.VTable = .{
         .draw = draw,
@@ -933,6 +952,7 @@ pub const RectNode = struct {
         const node = try gpa.create(RectNode);
         node.gpa = gpa;
         node.color = color;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -940,7 +960,7 @@ pub const RectNode = struct {
         this.gpa.destroy(this);
     }
 
-    pub fn toNode(this: *RectNode) !*Node {
+    fn toNode(this: *RectNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
@@ -956,6 +976,7 @@ pub const TextureNode = struct {
     texture: rl.Texture,
     scale: f32,
     owns_texture: bool,
+    node: *Node,
 
     /// `owns_texture` - when true, the texture will be unloaded when this node is deinitialized.
     pub fn init(gpa: std.mem.Allocator, texture: rl.Texture, owns_texture: bool) !*TextureNode {
@@ -964,6 +985,8 @@ pub const TextureNode = struct {
         node.texture = texture;
         node.scale = 1;
         node.owns_texture = owns_texture;
+        node.node = try node.toNode();
+        return node;
     }
 
     pub fn deinit(this: *TextureNode) void {
@@ -979,7 +1002,7 @@ pub const TextureNode = struct {
         .calculate_size = calculateSize,
         .type_info = Node.VTable.basicTypeInfo(TextureNode, &.{ "scale", "owns_texture" }),
     };
-    pub fn toNode(this: *TextureNode) !*Node {
+    fn toNode(this: *TextureNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
@@ -1004,6 +1027,7 @@ pub const TextInputNode = struct {
     cursor: usize,
     allowed_chars: ?[:0]const u8,
     max_len: usize,
+    node: *Node,
 
     /// `suggestion` - text to display when no input has been given.
     /// `allowed_chars` - a string of all allowed characters. Allows all ascii characters when null.
@@ -1021,6 +1045,7 @@ pub const TextInputNode = struct {
         node.cursor = 0;
         node.allowed_chars = if (allowed_chars) |a| try gpa.dupeZ(u8, a) else null;
         node.max_len = max_len;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -1040,7 +1065,7 @@ pub const TextInputNode = struct {
         .on_input = onInput,
         .draw = draw,
     };
-    pub fn toNode(this: *TextInputNode) !*Node {
+    fn toNode(this: *TextInputNode) !*Node {
         return try Node.init(this.gpa, this, .zero, &vtable);
     }
 
@@ -1162,6 +1187,7 @@ pub const ToggleNode = struct {
     toggled: *bool,
     outline_color: rl.Color,
     active_color: rl.Color,
+    node: *Node,
 
     pub fn init(gpa: std.mem.Allocator, toggled: *bool, outline_color: rl.Color, active_color: rl.Color) !*ToggleNode {
         const node = try gpa.create(ToggleNode);
@@ -1169,6 +1195,7 @@ pub const ToggleNode = struct {
         node.toggled = toggled;
         node.outline_color = outline_color;
         node.active_color = active_color;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -1182,7 +1209,7 @@ pub const ToggleNode = struct {
         .draw = draw,
         .on_click = onClick,
     };
-    pub fn toNode(this: *ToggleNode) !*Node {
+    fn toNode(this: *ToggleNode) !*Node {
         const node = try Node.init(this.gpa, this, .zero, &vtable);
         return node;
     }

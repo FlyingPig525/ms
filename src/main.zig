@@ -760,25 +760,23 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
         active: Enum,
         manager: *Manager,
         layout: *ui.LayoutNode,
-        layout_node: *ui.Node,
         rect: *ui.RectNode,
-        rect_node: *ui.Node,
         rect_y: easing.Eased(f32),
         entries: [fields.len]*EntryNode,
-        entry_nodes: [fields.len]*ui.Node,
         // added back because it feels weird to not be able to select a different option with the mouse while another menu is open
         accept_input: bool,
+        node: *ui.Node,
 
         pub const EntryNode = struct {
             gpa: std.mem.Allocator,
             menu: *This,
             entry: Enum,
             text: *ui.TextNode,
-            text_node: *ui.Node,
             text_x: easing.Eased(f32),
             //rect: *ui.RectNode,
             //rect_node: *ui.Node,
             selected: bool,
+            node: *ui.Node,
 
             const entry_vtable: ui.Node.VTable = .{
                 .deinit = ui.Node.VTable.basicOpaqueDeinit(EntryNode),
@@ -794,14 +792,14 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
                 node.entry = entry;
                 node.menu = menu;
                 node.text = try ui.TextNode.initDefault(gpa, text, 24, .white);
-                node.text_node = try node.text.toNode();
                 node.text_x = .init(0);
-                try node.text_node.setId("entry-text");
+                try node.text.node.setId("entry-text");
                 //node.rect = try ui.RectNode.init(gpa, .blank);
                 //node.rect_node = try node.rect.toNode();
                 //try node.rect_node.setId("selector-square");
                 //node.rect_node.space.size.x = 3;
                 node.selected = false;
+                node.node = try node.toNode();
                 return node;
             }
 
@@ -812,12 +810,12 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             fn tick(node: *ui.Node, dt: f32) !void {
                 const this = node.mgr(EntryNode);
                 this.text_x.tick(dt);
-                this.text_node.space.offset.x = this.text_x.current_value;
+                this.text.node.space.offset.x = this.text_x.current_value;
             }
 
-            pub fn toNode(this: *EntryNode) !*ui.Node {
+            fn toNode(this: *EntryNode) !*ui.Node {
                 const node = try ui.Node.init(this.gpa, this, .zero, &entry_vtable);
-                try node.addChild(this.text_node);
+                try node.addChild(this.text.node);
                 //try node.addChild(this.rect_node);
                 return node;
             }
@@ -825,9 +823,9 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             // this isnt how i would recommend doing this, but i cant think of a easier way right now
             fn calculateSize(node: *ui.Node) !rl.Vector2 {
                 const this = node.mgr(EntryNode);
-                try this.text_node.calculateSize();
+                try this.text.node.calculateSize();
                 //this.rect_node.space.size.y = this.text_node.space.size.y;
-                return this.text_node.space.size.add(.init(12, 0));
+                return this.text.node.space.size.add(.init(12, 0));
             }
 
             fn cursorPos(node: *ui.Node, _: rl.Vector2, rel: ?rl.Vector2) !void {
@@ -859,21 +857,19 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             node.manager = manager;
             node.accept_input = true;
             node.layout = try ui.LayoutNode.init(gpa, 12, .vertical, .start);
-            node.layout_node = try node.layout.toNode();
-            node.layout_node.space.offset.x = 12;
+            node.layout.node.space.offset.x = 12;
             node.rect = try ui.RectNode.init(gpa, .white);
-            node.rect_node = try node.rect.toNode();
-            node.rect_node.space.offset.x = 12;
-            node.rect_node.space.size.x = 3;
+            node.rect.node.space.offset.x = 12;
+            node.rect.node.space.size.x = 3;
             node.rect_y = .init(0);
             inline for (0..fields.len) |i| {
                 node.entries[i] = try .init(gpa, node, @enumFromInt(fields[i].value), fields[i].name);
-                node.entry_nodes[i] = try node.entries[i].toNode();
-                try node.entry_nodes[i].setId(fields[i].name);
-                try node.layout_node.addChild(node.entry_nodes[i]);
+                try node.entries[i].node.setId(fields[i].name);
+                try node.layout.node.addChild(node.entries[i].node);
             }
             node.entries[0].select();
             node.entries[0].text_x.set(12);
+            node.node = try node.toNode();
             return node;
         }
 
@@ -893,7 +889,7 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
                 this.entries[i].deselect();
                 if (@intFromEnum(this.active) == fields[i].value) {
                     this.entries[i].select();
-                    this.rect_y.interpolate(.iosine, 0.4, this.entry_nodes[i].space.offset.y);
+                    this.rect_y.interpolate(.iosine, 0.4, this.entries[i].node.space.offset.y);
                 }
             }
         }
@@ -949,14 +945,14 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
         fn tick(node: *ui.Node, dt: f32) !void {
             const this = node.mgr(This);
             this.rect_y.tick(dt);
-            this.rect_node.space.offset.y = this.rect_y.current_value;
+            this.rect.node.space.offset.y = this.rect_y.current_value;
         }
 
         fn calculateSize(node: *ui.Node) !rl.Vector2 {
             const this = node.mgr(This);
-            try this.layout_node.calculateSize();
-            this.rect_node.space.size.y = this.entry_nodes[0].space.size.y;
-            return this.layout_node.space.size;
+            try this.layout.node.calculateSize();
+            this.rect.node.space.size.y = this.entries[0].node.space.size.y;
+            return this.layout.node.space.size;
         }
 
         const vtable: ui.Node.VTable = .{
@@ -967,11 +963,11 @@ fn SelectionMenu(comptime Manager: type, comptime Enum: type, comptime func: *co
             .tick = tick,
             .calculate_size = This.calculateSize,
         };
-        pub fn toNode(this: *This) !*ui.Node {
+        fn toNode(this: *This) !*ui.Node {
             const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
-            try node.addChild(this.layout_node);
-            try node.addChild(this.rect_node);
-            this.rect_node.space.size.y = this.entry_nodes[0].space.size.y;
+            try node.addChild(this.layout.node);
+            try node.addChild(this.rect.node);
+            this.rect.node.space.size.y = this.entries[0].node.space.size.y;
             return node;
         }
     };
@@ -999,37 +995,22 @@ pub const MenuManager = struct {
         @"Invert Scroll",
         Back,
     };
-    fn NodePair(comptime Manager: type) type {
-        if (!@hasDecl(Manager, "toNode")) @compileError("Manager must have a toNode method");
-        return struct {
-            manager: *Manager,
-            node: *ui.Node,
-
-            pub fn init(manager: *Manager) !@This() {
-                return .{
-                    .manager = manager,
-                    .node = try manager.toNode(),
-                };
-            }
-        };
-    }
 
     gpa: std.mem.Allocator,
     layout: *ui.LayoutNode,
-    layout_node: *ui.Node,
-    main_menu: ?NodePair(MainMenu),
-    mode_menu: ?NodePair(ModeMenu),
-    settings_menu: ?NodePair(SettingsMenu),
+    main_menu: ?*MainMenu,
+    mode_menu: ?*ModeMenu,
+    settings_menu: ?*SettingsMenu,
     exit_ptr: *bool,
     restart_ptr: *bool,
     target_mode_ptr: *Board.Mode,
     settings: *Settings,
+    node: *ui.Node,
 
     pub fn init(gpa: std.mem.Allocator, exit_ptr: *bool, restart_ptr: *bool, target_mode_ptr: *Board.Mode, settings: *Settings) !*MenuManager {
         const node = try gpa.create(MenuManager);
         node.gpa = gpa;
         node.layout = try ui.LayoutNode.init(gpa, 12, .horizontal, .start);
-        node.layout_node = try node.layout.toNode();
         node.main_menu = null;
         node.mode_menu = null;
         node.settings_menu = null;
@@ -1037,6 +1018,7 @@ pub const MenuManager = struct {
         node.restart_ptr = restart_ptr;
         node.target_mode_ptr = target_mode_ptr;
         node.settings = settings;
+        node.node = try node.toNode();
         return node;
     }
 
@@ -1046,19 +1028,19 @@ pub const MenuManager = struct {
 
     pub fn open(this: *MenuManager) !void {
         if (this.main_menu != null) return;
-        this.main_menu = try .init(try MainMenu.init(this.gpa, this));
-        try this.layout_node.addChild(this.main_menu.?.node);
-        try this.layout_node.recalculateNodeGraphSize();
+        this.main_menu = try MainMenu.init(this.gpa, this);
+        try this.layout.node.addChild(this.main_menu.?.node);
+        try this.layout.node.recalculateNodeGraphSize();
     }
 
     pub fn openMode(this: *MenuManager) !void {
         if (this.mode_menu != null) return;
         if (this.main_menu == null) unreachable;
         if (this.settings_menu != null) unreachable;
-        this.mode_menu = try .init(try ModeMenu.init(this.gpa, this));
-        try this.layout_node.addChild(this.mode_menu.?.node);
-        try this.layout_node.recalculateNodeGraphSize();
-        this.main_menu.?.manager.accept_input = false;
+        this.mode_menu = try ModeMenu.init(this.gpa, this);
+        try this.layout.node.addChild(this.mode_menu.?.node);
+        try this.layout.node.recalculateNodeGraphSize();
+        this.main_menu.?.accept_input = false;
         //this.main_menu.?.node.frozen = true;
     }
 
@@ -1066,10 +1048,10 @@ pub const MenuManager = struct {
         if (this.settings_menu != null) return;
         if (this.main_menu == null) unreachable;
         if (this.mode_menu != null) unreachable;
-        this.settings_menu = try .init(try SettingsMenu.init(this.gpa, this));
-        try this.layout_node.addChild(this.settings_menu.?.node);
-        try this.layout_node.recalculateNodeGraphSize();
-        this.main_menu.?.manager.accept_input = false;
+        this.settings_menu = try SettingsMenu.init(this.gpa, this);
+        try this.layout.node.addChild(this.settings_menu.?.node);
+        try this.layout.node.recalculateNodeGraphSize();
+        this.main_menu.?.accept_input = false;
         //this.main_menu.?.node.frozen = true;
     }
 
@@ -1102,7 +1084,7 @@ pub const MenuManager = struct {
             this.settings_menu = null;
         }
 
-        try this.layout_node.recalculateNodeGraphSize();
+        try this.layout.node.recalculateNodeGraphSize();
     }
 
     pub fn closeMode(this: *MenuManager) !void {
@@ -1115,8 +1097,8 @@ pub const MenuManager = struct {
             }
             this.mode_menu = null;
         }
-        this.main_menu.?.manager.accept_input = true;
-        try this.layout_node.recalculateNodeGraphSize();
+        this.main_menu.?.accept_input = true;
+        try this.layout.node.recalculateNodeGraphSize();
     }
 
     pub fn closeSettings(this: *MenuManager) !void {
@@ -1129,8 +1111,8 @@ pub const MenuManager = struct {
             }
             this.settings_menu = null;
         }
-        this.main_menu.?.manager.accept_input = true;
-        try this.layout_node.recalculateNodeGraphSize();
+        this.main_menu.?.accept_input = true;
+        try this.layout.node.recalculateNodeGraphSize();
     }
 
     fn submitMainMenu(this: *MenuManager, active: MainOptions) void {
@@ -1188,7 +1170,7 @@ pub const MenuManager = struct {
     };
     pub fn toNode(this: *MenuManager) !*ui.Node {
         const node = try ui.Node.init(this.gpa, this, .zero, &vtable);
-        try node.addChild(this.layout_node);
+        try node.addChild(this.layout.node);
         return node;
     }
 };
@@ -1478,19 +1460,18 @@ pub fn main(init: std.process.Init) !void {
     defer inspector.deinit();
 
     // TODO: for some reason when these are different values, things dont scale correctly. i dont know why yet
-    var root = ui.RootNode{
-        .screen_size = .init(screen_width, screen_height),
-        .true_size = .init(screen_width, screen_height),
-    };
-    const root_node = try root.toNode(init.gpa);
-    defer root_node.deinit();
+    var root = try ui.RootNode.init(
+        init.gpa,
+        .init(screen_width, screen_height),
+        .init(screen_width, screen_height),
+    );
+    defer root.node.deinit();
     var target_mode: Board.Mode = .default;
     const menu = try MenuManager.init(init.gpa, &should_exit, &should_restart, &target_mode, &settings);
-    const menu_node = try menu.toNode();
-    menu_node.space.offset.y = 30;
-    try root_node.addChild(menu_node);
+    menu.node.space.offset.y = 30;
+    try root.node.addChild(menu.node);
 
-    try inspector.setRoot(root_node);
+    try inspector.setRoot(root.node);
 
     var keys_pressed: std.ArrayList(rl.KeyboardKey) = .empty;
     defer keys_pressed.deinit(init.gpa);
@@ -1528,16 +1509,16 @@ pub fn main(init: std.process.Init) !void {
             const cursor = inspector.translate(rl.getMousePosition().divide(root.true_size).multiply(root.screen_size));
             defer last_cursor = cursor;
             if (!cursor.equals(last_cursor)) {
-                try root_node.cursorPos(cursor, cursor);
+                try root.node.cursorPos(cursor, cursor);
             }
-            try root_node.tick(dt);
+            try root.node.tick(dt);
             if (menu.main_menu == null) {
                 try board.tick(dt);
             } else {
                 while (iterateKeysPressed()) |key| {
                     try keys_pressed.append(init.gpa, key);
                     if (menu.main_menu != null) {
-                        _ = try root_node.onInput(key, false);
+                        _ = try root.node.onInput(key, false);
                     }
                 }
                 for (keys_pressed.items, 0..) |key, i| {
@@ -1547,14 +1528,14 @@ pub fn main(init: std.process.Init) !void {
                     }
                     if (rl.isKeyPressedRepeat(key)) {
                         if (menu.main_menu != null) {
-                            _ = try root_node.onInput(key, true);
+                            _ = try root.node.onInput(key, true);
                         }
                     }
                 }
                 if (rl.isMouseButtonPressed(.left)) {
-                    _ = try root_node.onClick(.left, cursor);
+                    _ = try root.node.onClick(.left, cursor);
                 }
-                try root_node.tick(rl.getFrameTime());
+                try root.node.tick(rl.getFrameTime());
             }
             if ((should_exit or board.end_thyself or should_restart or rl.windowShouldClose())) {
                 // this is here because it stalls for a frame after endDrawing, so if you use mouse controls you wont immediately
@@ -1572,7 +1553,7 @@ pub fn main(init: std.process.Init) !void {
                 if (menu.main_menu == null) {
                     try board.draw();
                 } else {
-                    try root_node.draw();
+                    try root.node.draw();
                 }
                 rl.drawFPS(0, 0);
             }
